@@ -14,9 +14,24 @@ from src.database.qdrant import (
 )
 
 
+
+
+
 app = FastAPI(
     title="AI Study Assistant API",
     version="1.0.0"
+)
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://YOUR-FRONTEND-DOMAIN.vercel.app",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
