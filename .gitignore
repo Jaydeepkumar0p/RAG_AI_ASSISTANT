@@ -1,0 +1,17 @@
+venv/
+.venv/
+
+.env
+
+qdrant_data/
+
+uploads/
+
+__pycache__/
+*.pyc
+*.pyo
+
+.pytest_cache/
+
+.vscode/
+.idea/
