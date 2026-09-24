@@ -2,7 +2,8 @@ import uuid
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+
+from fastembed import TextEmbedding
 
 from qdrant_client import models
 
@@ -25,16 +26,13 @@ def get_embeddings():
 
     if _embeddings is None:
 
-        print("Loading embedding model...")
+        print("Loading FastEmbed model...")
 
-        _embeddings = HuggingFaceEmbeddings(
-            model_name=(
-                "sentence-transformers/"
-                "all-MiniLM-L6-v2"
-            )
+        _embeddings = TextEmbedding(
+            model_name="BAAI/bge-small-en-v1.5"
         )
 
-        print("Embedding model loaded.")
+        print("FastEmbed model loaded.")
 
     return _embeddings
 
@@ -55,43 +53,30 @@ splitter = RecursiveCharacterTextSplitter(
 
 def create_collection():
 
-    if not client.collection_exists(
-        COLLECTION_NAME
-    ):
+    if not client.collection_exists(COLLECTION_NAME):
 
         client.create_collection(
-
             collection_name=COLLECTION_NAME,
 
             vectors_config=models.VectorParams(
-
                 size=384,
-
                 distance=models.Distance.COSINE
             )
         )
 
         print(
-            f"Created collection: "
-            f"{COLLECTION_NAME}"
+            f"Created collection: {COLLECTION_NAME}"
         )
 
     try:
 
         client.create_payload_index(
-
             collection_name=COLLECTION_NAME,
-
             field_name="user_id",
-
-            field_schema=(
-                models.PayloadSchemaType.KEYWORD
-            )
+            field_schema=models.PayloadSchemaType.KEYWORD
         )
 
-        print(
-            "user_id payload index ready"
-        )
+        print("user_id payload index ready")
 
     except Exception as e:
 
@@ -107,24 +92,17 @@ def create_collection():
 # ======================================================
 
 def process_pdf(
-
     file_path: str,
-
     user_id: str,
-
     document_id: str,
-
     filename: str
-
 ):
 
     # --------------------------------------------------
     # 1. Load PDF
     # --------------------------------------------------
 
-    loader = PyPDFLoader(
-        file_path
-    )
+    loader = PyPDFLoader(file_path)
 
     documents = loader.load()
 
@@ -132,112 +110,93 @@ def process_pdf(
     # 2. Split PDF
     # --------------------------------------------------
 
-    chunks = splitter.split_documents(
-        documents
-    )
+    chunks = splitter.split_documents(documents)
 
     if not chunks:
-
-        return {
-            "chunks": 0
-        }
+        return {"chunks": 0}
 
     # --------------------------------------------------
-    # 3. Load embeddings ONLY when needed
+    # 3. Get lightweight embedding model
     # --------------------------------------------------
 
     embeddings = get_embeddings()
 
     # --------------------------------------------------
-    # 4. Create Qdrant points
+    # 4. Extract texts
+    # --------------------------------------------------
+
+    texts = []
+
+    valid_chunks = []
+
+    for chunk in chunks:
+
+        text = chunk.page_content.strip()
+
+        if not text:
+            continue
+
+        texts.append(text)
+        valid_chunks.append(chunk)
+
+    if not texts:
+        return {"chunks": 0}
+
+    # --------------------------------------------------
+    # 5. Generate embeddings in batch
+    # --------------------------------------------------
+
+    vectors = list(
+        embeddings.embed(texts)
+    )
+
+    # --------------------------------------------------
+    # 6. Create Qdrant points
     # --------------------------------------------------
 
     points = []
 
-    for chunk in chunks:
-
-        text = (
-            chunk.page_content
-            .strip()
-        )
-
-        if not text:
-
-            continue
-
-        # ----------------------------------------------
-        # Generate embedding
-        # ----------------------------------------------
-
-        vector = (
-            embeddings.embed_query(
-                text
-            )
-        )
-
-        # ----------------------------------------------
-        # Create point
-        # ----------------------------------------------
+    for chunk, vector in zip(
+        valid_chunks,
+        vectors
+    ):
 
         point = models.PointStruct(
 
-            id=str(
-                uuid.uuid4()
-            ),
+            id=str(uuid.uuid4()),
 
-            vector=vector,
+            vector=vector.tolist()
+            if hasattr(vector, "tolist")
+            else list(vector),
 
             payload={
 
-                "text":
-                    text,
+                "text": chunk.page_content.strip(),
 
-                "page":
-                    chunk.metadata.get(
-                        "page"
-                    ),
+                "page": chunk.metadata.get("page"),
 
-                "user_id":
-                    user_id,
+                "user_id": user_id,
 
-                "document_id":
-                    document_id,
+                "document_id": document_id,
 
-                "filename":
-                    filename
+                "filename": filename
             }
         )
 
-        points.append(
-            point
-        )
+        points.append(point)
 
     # --------------------------------------------------
-    # 5. No valid content
-    # --------------------------------------------------
-
-    if not points:
-
-        return {
-            "chunks": 0
-        }
-
-    # --------------------------------------------------
-    # 6. Upload
+    # 7. Upload
     # --------------------------------------------------
 
     client.upsert(
-
         collection_name=COLLECTION_NAME,
-
         points=points,
-
         wait=True
     )
 
     print(
-        f"Uploaded {len(points)} "
-        f"chunks to Qdrant"
+        f"Uploaded {len(points)} chunks to Qdrant"
     )
 
     return {
