@@ -1,6 +1,4 @@
-from langchain_huggingface import (
-    HuggingFaceEmbeddings
-)
+from fastembed import TextEmbedding
 
 from qdrant_client.models import (
     Filter,
@@ -14,18 +12,25 @@ from src.database.qdrant import (
 )
 
 
-# ======================================================
-# EMBEDDINGS
-# ======================================================
-
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+_embeddings = None
 
 
-# ======================================================
-# RETRIEVE DOCUMENTS
-# ======================================================
+def get_embeddings():
+
+    global _embeddings
+
+    if _embeddings is None:
+
+        print("Loading FastEmbed retrieval model...")
+
+        _embeddings = TextEmbedding(
+            model_name="BAAI/bge-small-en-v1.5"
+        )
+
+        print("FastEmbed retrieval model loaded.")
+
+    return _embeddings
+
 
 def retrieve_documents(
     query: str,
@@ -33,32 +38,30 @@ def retrieve_documents(
     limit: int = 8
 ):
 
-    query = query.strip()
+    embeddings = get_embeddings()
 
-    if not query:
+    # ----------------------------------------------
+    # Embed query
+    # ----------------------------------------------
 
-        return []
+    query_vector = list(
+        embeddings.embed([query])
+    )[0]
 
-    # --------------------------------------------------
-    # Query embedding
-    # --------------------------------------------------
-
-    query_vector = embeddings.embed_query(
-        query
+    query_vector = (
+        query_vector.tolist()
+        if hasattr(query_vector, "tolist")
+        else list(query_vector)
     )
 
-    # --------------------------------------------------
-    # User isolation filter
-    # --------------------------------------------------
+    # ----------------------------------------------
+    # User isolation
+    # ----------------------------------------------
 
     user_filter = Filter(
-
         must=[
-
             FieldCondition(
-
                 key="user_id",
-
                 match=MatchValue(
                     value=user_id
                 )
@@ -66,24 +69,17 @@ def retrieve_documents(
         ]
     )
 
-    # --------------------------------------------------
+    # ----------------------------------------------
     # Qdrant search
-    # --------------------------------------------------
+    # ----------------------------------------------
 
     results = client.query_points(
-
         collection_name=COLLECTION_NAME,
-
         query=query_vector,
-
         query_filter=user_filter,
-
         limit=limit,
-
         with_payload=True,
-
         with_vectors=False
-
     ).points
 
     return results
