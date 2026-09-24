@@ -21,11 +21,9 @@ _embeddings = None
 
 
 def get_embeddings():
-
     global _embeddings
 
     if _embeddings is None:
-
         print("Loading FastEmbed model...")
 
         _embeddings = TextEmbedding(
@@ -53,11 +51,14 @@ splitter = RecursiveCharacterTextSplitter(
 
 def create_collection():
 
+    # --------------------------------------------------
+    # Create collection if it does not exist
+    # --------------------------------------------------
+
     if not client.collection_exists(COLLECTION_NAME):
 
         client.create_collection(
             collection_name=COLLECTION_NAME,
-
             vectors_config=models.VectorParams(
                 size=384,
                 distance=models.Distance.COSINE
@@ -67,6 +68,10 @@ def create_collection():
         print(
             f"Created collection: {COLLECTION_NAME}"
         )
+
+    # --------------------------------------------------
+    # Ensure user_id index
+    # --------------------------------------------------
 
     try:
 
@@ -113,20 +118,15 @@ def process_pdf(
     chunks = splitter.split_documents(documents)
 
     if not chunks:
-        return {"chunks": 0}
+        return {
+            "chunks": 0
+        }
 
     # --------------------------------------------------
-    # 3. Get lightweight embedding model
-    # --------------------------------------------------
-
-    embeddings = get_embeddings()
-
-    # --------------------------------------------------
-    # 4. Extract texts
+    # 3. Extract valid text
     # --------------------------------------------------
 
     texts = []
-
     valid_chunks = []
 
     for chunk in chunks:
@@ -140,10 +140,18 @@ def process_pdf(
         valid_chunks.append(chunk)
 
     if not texts:
-        return {"chunks": 0}
+        return {
+            "chunks": 0
+        }
 
     # --------------------------------------------------
-    # 5. Generate embeddings in batch
+    # 4. Load embedding model only when needed
+    # --------------------------------------------------
+
+    embeddings = get_embeddings()
+
+    # --------------------------------------------------
+    # 5. Generate embeddings
     # --------------------------------------------------
 
     vectors = list(
@@ -161,16 +169,18 @@ def process_pdf(
         vectors
     ):
 
-        point = models.PointStruct(
+        vector_list = (
+            vector.tolist()
+            if hasattr(vector, "tolist")
+            else list(vector)
+        )
 
+        point = models.PointStruct(
             id=str(uuid.uuid4()),
 
-            vector=vector.tolist()
-            if hasattr(vector, "tolist")
-            else list(vector),
+            vector=vector_list,
 
             payload={
-
                 "text": chunk.page_content.strip(),
 
                 "page": chunk.metadata.get("page"),
@@ -186,7 +196,16 @@ def process_pdf(
         points.append(point)
 
     # --------------------------------------------------
-    # 7. Upload
+    # 7. Nothing to upload
+    # --------------------------------------------------
+
+    if not points:
+        return {
+            "chunks": 0
+        }
+
+    # --------------------------------------------------
+    # 8. Upload to Qdrant
     # --------------------------------------------------
 
     client.upsert(
