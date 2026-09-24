@@ -1,16 +1,8 @@
 import uuid
 
-from langchain_community.document_loaders import (
-    PyPDFLoader
-)
-
-from langchain_text_splitters import (
-    RecursiveCharacterTextSplitter
-)
-
-from langchain_huggingface import (
-    HuggingFaceEmbeddings
-)
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from qdrant_client import models
 
@@ -24,12 +16,27 @@ from src.database.qdrant import (
 # EMBEDDINGS
 # ======================================================
 
-embeddings = HuggingFaceEmbeddings(
-    model_name=(
-        "sentence-transformers/"
-        "all-MiniLM-L6-v2"
-    )
-)
+_embeddings = None
+
+
+def get_embeddings():
+
+    global _embeddings
+
+    if _embeddings is None:
+
+        print("Loading embedding model...")
+
+        _embeddings = HuggingFaceEmbeddings(
+            model_name=(
+                "sentence-transformers/"
+                "all-MiniLM-L6-v2"
+            )
+        )
+
+        print("Embedding model loaded.")
+
+    return _embeddings
 
 
 # ======================================================
@@ -47,10 +54,6 @@ splitter = RecursiveCharacterTextSplitter(
 # ======================================================
 
 def create_collection():
-
-    # --------------------------------------------------
-    # Create collection if missing
-    # --------------------------------------------------
 
     if not client.collection_exists(
         COLLECTION_NAME
@@ -73,10 +76,6 @@ def create_collection():
             f"{COLLECTION_NAME}"
         )
 
-    # --------------------------------------------------
-    # Ensure user_id payload index
-    # --------------------------------------------------
-
     try:
 
         client.create_payload_index(
@@ -91,13 +90,11 @@ def create_collection():
         )
 
         print(
-            "user_id payload index "
-            "ready"
+            "user_id payload index ready"
         )
 
     except Exception as e:
 
-        # Existing index is okay.
         print(
             "user_id index already exists "
             "or could not be recreated:",
@@ -146,7 +143,13 @@ def process_pdf(
         }
 
     # --------------------------------------------------
-    # 3. Create Qdrant points
+    # 3. Load embeddings ONLY when needed
+    # --------------------------------------------------
+
+    embeddings = get_embeddings()
+
+    # --------------------------------------------------
+    # 4. Create Qdrant points
     # --------------------------------------------------
 
     points = []
@@ -210,7 +213,7 @@ def process_pdf(
         )
 
     # --------------------------------------------------
-    # 4. No valid content
+    # 5. No valid content
     # --------------------------------------------------
 
     if not points:
@@ -220,7 +223,7 @@ def process_pdf(
         }
 
     # --------------------------------------------------
-    # 5. Upload
+    # 6. Upload
     # --------------------------------------------------
 
     client.upsert(
