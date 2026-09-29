@@ -1,121 +1,234 @@
-from src.services.agent.graph import agent_graph
+# ======================================================
+# QUESTION / ANSWER SERVICE
+# ======================================================
+
+from src.services.agent.graph import (
+    agent_graph,
+)
 
 from src.services.conversation_service import (
     get_history,
-    save_message
+    get_conversation,
+    save_message,
 )
 
+
+# ======================================================
+# ANSWER QUESTION
+# ======================================================
 
 def answer_question(
     question: str,
     user_id: str,
-    conversation_id: str
+    conversation_id: str,
 ):
 
-    # ==================================================
-    # LOAD PREVIOUS CONVERSATION
-    # ==================================================
+    question =
+        question.strip()
 
-    history = get_history(
-        conversation_id=conversation_id,
-        user_id=user_id
-    )
 
-    # ==================================================
-    # INITIAL GRAPH STATE
-    # ==================================================
+    if not question:
+
+        raise ValueError(
+            "Question cannot be empty."
+        )
+
+
+    # --------------------------------------------------
+    # Validate conversation
+    # --------------------------------------------------
+
+    conversation =
+        get_conversation(
+
+            conversation_id=
+                conversation_id,
+
+            user_id=
+                user_id,
+        )
+
+
+    if not conversation:
+
+        raise ValueError(
+            "Conversation not found."
+        )
+
+
+    # --------------------------------------------------
+    # Load previous history
+    #
+    # IMPORTANT:
+    # The current message is NOT saved yet.
+    # --------------------------------------------------
+
+    history =
+        get_history(
+
+            conversation_id=
+                conversation_id,
+
+            user_id=
+                user_id,
+        )
+
+
+    # --------------------------------------------------
+    # Initial graph state
+    # --------------------------------------------------
 
     initial_state = {
 
-        "question": question,
+        "question":
+            question,
 
-        "user_id": user_id,
+        "user_id":
+            user_id,
 
-        "conversation_id": conversation_id,
+        "conversation_id":
+            conversation_id,
 
-        "history": history,
+        "history":
+            history,
 
-        "intent": "",
+        "intent":
+            "GENERAL",
 
-        "rewritten_query": "",
+        "search_queries":
+            [],
 
-        "context": "",
+        "rewritten_query":
+            "",
 
-        "sources": [],
+        "context":
+            "",
 
-        "retrieval_relevant": False,
+        "sources":
+            [],
 
-        "answer": "",
+        "reranker_scores":
+            [],
 
-        "retry_count": 0
+        "retrieval_relevant":
+            False,
+
+        "retrieval_attempted":
+            False,
+
+        "retry_count":
+            0,
+
+        "max_retries":
+            1,
+
+        "answer":
+            "",
     }
 
-    # ==================================================
-    # RUN LANGGRAPH
-    # ==================================================
 
-    result = agent_graph.invoke(
-        initial_state
-    )
+    # --------------------------------------------------
+    # Run agent
+    # --------------------------------------------------
 
-    # ==================================================
-    # SAVE USER MESSAGE
-    # ==================================================
-
-    save_message(
-        conversation_id=conversation_id,
-        user_id=user_id,
-        role="user",
-        content=question
-    )
-
-    # ==================================================
-    # SAVE ASSISTANT MESSAGE
-    # ==================================================
-
-    save_message(
-        conversation_id=conversation_id,
-        user_id=user_id,
-        role="assistant",
-        content=result.get(
-            "answer",
-            ""
+    result =
+        agent_graph.invoke(
+            initial_state
         )
+
+
+    answer =
+        str(
+            result.get(
+                "answer",
+                ""
+            )
+        ).strip()
+
+
+    if not answer:
+
+        answer =
+            "I was unable to generate a response."
+
+
+    # --------------------------------------------------
+    # Save user message
+    # --------------------------------------------------
+
+    save_message(
+
+        conversation_id=
+            conversation_id,
+
+        user_id=
+            user_id,
+
+        role=
+            "user",
+
+        content=
+            question,
     )
 
-    # ==================================================
-    # RESPONSE
-    # ==================================================
+
+    # --------------------------------------------------
+    # Save assistant message
+    # --------------------------------------------------
+
+    save_message(
+
+        conversation_id=
+            conversation_id,
+
+        user_id=
+            user_id,
+
+        role=
+            "assistant",
+
+        content=
+            answer,
+    )
+
+
+    # --------------------------------------------------
+    # Return API result
+    # --------------------------------------------------
 
     return {
 
-        "question": result.get(
-            "question",
-            question
-        ),
+        "question":
+            question,
 
-        "intent": result.get(
-            "intent",
-            "QA"
-        ),
+        "intent":
+            result.get(
+                "intent",
+                "GENERAL"
+            ),
 
-        "rewritten_query": result.get(
-            "rewritten_query",
-            ""
-        ),
+        "rewritten_query":
+            result.get(
+                "rewritten_query"
+            ),
 
-        "retrieval_relevant": result.get(
-            "retrieval_relevant",
-            False
-        ),
+        "retrieval_relevant":
+            result.get(
+                "retrieval_relevant"
+            ),
 
-        "answer": result.get(
-            "answer",
-            ""
-        ),
+        "answer":
+            answer,
 
-        "sources": result.get(
-            "sources",
-            []
-        )
+        "sources":
+            result.get(
+                "sources",
+                []
+            ),
+
+        "reranker_scores":
+            result.get(
+                "reranker_scores",
+                []
+            ),
     }
