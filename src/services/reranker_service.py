@@ -1,239 +1,210 @@
 # ======================================================
-# RERANKER SERVICE
+# LIGHTWEIGHT RERANKER
 # ======================================================
 #
-# Lightweight reranker for Render Free deployment.
+# No sentence-transformers dependency.
 #
-# The previous implementation used:
+# Uses:
+# 1. Qdrant similarity score
+# 2. Lexical token overlap
 #
-#     from sentence_transformers import CrossEncoder
-#
-# and:
-#
-#     CrossEncoder("cross-encoder/ms-marco-MiniLM-L6-v2")
-#
-# That loads a PyTorch/Sentence-Transformers model and
-# can push a 512 MB Render instance over its memory limit.
-#
-# This implementation keeps the same public function:
-#
-#     rerank_documents(query, results, top_k)
-#
-# so the rest of the RAG / LangGraph pipeline can continue
-# using the same interface.
+# This keeps deployment lightweight and avoids loading
+# another large ML model on Render.
 # ======================================================
 
 import re
-from typing import Any
 
 
 # ======================================================
-# TOKENIZATION
+# TOKENIZE
 # ======================================================
 
-def _tokenize(text: str) -> set[str]:
-    """
-    Convert text into a set of normalized word tokens.
-    """
+def _tokens(
+    text: str
+) -> set[str]:
 
-    if not text:
-        return set()
-
-    return set(
+    words =
         re.findall(
-            r"\b[a-zA-Z0-9]+\b",
-            text.lower()
+            r"[a-zA-Z0-9_]+",
+            str(
+                text or ""
+            ).lower()
         )
-    )
+
+    return {
+        word
+        for word in words
+        if len(word) > 1
+    }
 
 
 # ======================================================
-# RELEVANCE SCORE
+# LEXICAL OVERLAP
 # ======================================================
 
-def _relevance_score(
-    query_tokens: set[str],
-    document_tokens: set[str]
+def _overlap_score(
+    query: str,
+    document: str
 ) -> float:
-    """
-    Calculate a simple lexical relevance score.
 
-    Score is based on how many query terms occur
-    in the candidate document.
+    query_tokens =
+        _tokens(
+            query
+        )
 
-    Returns a value between 0.0 and 1.0.
-    """
+    document_tokens =
+        _tokens(
+            document
+        )
+
 
     if not query_tokens:
         return 0.0
 
-    if not document_tokens:
-        return 0.0
 
-    matching_tokens = (
-        query_tokens & document_tokens
-    )
+    overlap =
+        len(
+            query_tokens
+            &
+            document_tokens
+        )
+
 
     return (
-        len(matching_tokens)
-        / len(query_tokens)
+        overlap /
+        len(
+            query_tokens
+        )
     )
 
 
 # ======================================================
-# RERANK DOCUMENTS
+# BASE SCORE
+# ======================================================
+
+def _qdrant_score(
+    result
+) -> float:
+
+    score =
+        getattr(
+            result,
+            "score",
+            0.0
+        )
+
+
+    try:
+
+        return float(
+            score
+        )
+
+    except (
+        TypeError,
+        ValueError
+    ):
+
+        return 0.0
+
+
+# ======================================================
+# RERANK
 # ======================================================
 
 def rerank_documents(
     query: str,
-    results: list[Any],
-    top_k: int = 3
+    results: list,
+    top_k: int = 3,
 ):
-    """
-    Rerank Qdrant retrieval results.
-
-    Parameters
-    ----------
-    query:
-        User/search query.
-
-    results:
-        List of Qdrant ScoredPoint objects.
-
-    top_k:
-        Number of results to return.
-
-    Returns
-    -------
-    list:
-        Same structure expected by the existing pipeline:
-
-        [
-            {
-                "score": float,
-                "result": qdrant_result
-            }
-        ]
-    """
-
-    # --------------------------------------------------
-    # Validate input
-    # --------------------------------------------------
 
     if not results:
         return []
 
-    if top_k <= 0:
-        return []
-
-    # --------------------------------------------------
-    # Tokenize query
-    # --------------------------------------------------
-
-    query_tokens = _tokenize(query)
 
     ranked = []
 
-    # --------------------------------------------------
-    # Score every candidate
-    # --------------------------------------------------
 
     for result in results:
 
-        # ----------------------------------------------
-        # Safely get Qdrant payload
-        # ----------------------------------------------
+        payload =
+            result.payload or {}
 
-        payload = getattr(
-            result,
-            "payload",
-            None
+
+        text =
+            str(
+                payload.get(
+                    "text",
+                    ""
+                )
+            )
+
+
+        vector_score =
+            _qdrant_score(
+                result
+            )
+
+
+        lexical_score =
+            _overlap_score(
+                query,
+                text
+            )
+
+
+        # ------------------------------------------------
+        # Combined score
+        #
+        # Qdrant semantic score gets higher weight.
+        # Lexical overlap helps exact technical terms.
+        # ------------------------------------------------
+
+        combined_score = (
+            (
+                0.75 *
+                vector_score
+            )
+            +
+            (
+                0.25 *
+                lexical_score
+            )
         )
 
-        if not isinstance(
-            payload,
-            dict
-        ):
-            payload = {}
-
-        # ----------------------------------------------
-        # Get document text
-        # ----------------------------------------------
-
-        text = payload.get(
-            "text",
-            ""
-        )
-
-        if not isinstance(
-            text,
-            str
-        ):
-            text = str(text)
-
-        # ----------------------------------------------
-        # Calculate lexical relevance
-        # ----------------------------------------------
-
-        document_tokens = _tokenize(
-            text
-        )
-
-        score = _relevance_score(
-            query_tokens,
-            document_tokens
-        )
-
-        # ----------------------------------------------
-        # Keep original Qdrant result
-        # ----------------------------------------------
 
         ranked.append(
             (
-                float(score),
+                combined_score,
                 result
             )
         )
 
-    # --------------------------------------------------
-    # Sort highest relevance first
-    # --------------------------------------------------
+
+    # ----------------------------------------------------
+    # Highest first
+    # ----------------------------------------------------
 
     ranked.sort(
-        key=lambda item: item[0],
+        key=lambda item:
+            item[0],
+
         reverse=True
     )
 
-    # --------------------------------------------------
-    # Return top-k results
-    # --------------------------------------------------
 
     return [
+
         {
-            "score": score,
-            "result": result
+            "score":
+                float(score),
+
+            "result":
+                result,
         }
+
         for score, result
-        in ranked[:top_k]
+        in ranked[
+            :top_k
+        ]
     ]
-
-
-# ======================================================
-# OPTIONAL COMPATIBILITY FUNCTION
-# ======================================================
-
-def rerank(
-    query: str,
-    results: list[Any],
-    top_k: int = 3
-):
-    """
-    Compatibility wrapper in case another service
-    imports `rerank()` instead of `rerank_documents()`.
-    """
-
-    return rerank_documents(
-        query=query,
-        results=results,
-        top_k=top_k
-    )
