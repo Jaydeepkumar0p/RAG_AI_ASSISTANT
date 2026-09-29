@@ -2,145 +2,94 @@
 # AGENT NODES
 # ======================================================
 
-from src.services.intent_classifier import (
-    classify_intent,
-)
-
-from src.services.query_rewriter import (
-    rewrite_query,
-)
-
-from src.services.retrieval_service import (
-    retrieve_documents,
-)
-
-from src.services.retrieval_evaluator import (
-    evaluate_retrieval,
-)
-
-from src.services.reranker_service import (
-    rerank_documents,
-)
-
-from src.services.llm_service import (
-    llm,
-)
+from src.services.query_rewriter import rewrite_query
+from src.services.retrieval_service import retrieve_documents
+from src.services.retrieval_evaluator import evaluate_retrieval
+from src.services.llm_service import llm
+from src.services.intent_classifier import classify_intent
+from src.services.reranker_service import rerank_documents
 
 
 # ======================================================
 # HELPERS
 # ======================================================
 
-def _history_text(
-    history: list[dict] | None
-) -> str:
-
+def _history_text(history):
     if not history:
         return ""
 
-    parts = []
+    lines = []
 
     for message in history[-6:]:
+        role = str(message.get("role", ""))
+        content = str(message.get("content", ""))
 
-        role = str(
-            message.get(
-                "role",
-                ""
-            )
-        )
-
-        content = str(
-            message.get(
-                "content",
-                ""
-            )
-        )
-
-        parts.append(
+        lines.append(
             f"{role}: {content}"
         )
 
-    return "\n".join(parts)
+    return "\n".join(lines)
 
 
-def _content(
-    response
-) -> str:
-
-    value = getattr(
+def _response_content(response):
+    content = getattr(
         response,
         "content",
         ""
     )
 
-    if isinstance(
-        value,
-        str
-    ):
+    if isinstance(content, str):
+        return content.strip()
 
-        return value.strip()
-
-
-    if isinstance(
-        value,
-        list
-    ):
-
+    if isinstance(content, list):
         parts = []
 
-        for item in value:
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
 
-            if isinstance(
-                item,
-                str
-            ):
-                parts.append(
-                    item
-                )
-
-            elif isinstance(
-                item,
-                dict
-            ):
-
-                text = item.get(
-                    "text"
-                )
+            elif isinstance(item, dict):
+                text = item.get("text")
 
                 if text:
-                    parts.append(
-                        str(text)
-                    )
+                    parts.append(str(text))
 
-        return "".join(
-            parts
-        ).strip()
+        return "".join(parts).strip()
 
-
-    return str(
-        value
-    ).strip()
+    return str(content).strip()
 
 
 # ======================================================
-# CLASSIFY
+# CLASSIFY INTENT NODE
 # ======================================================
 
-def classify_intent_node(
-    state
-):
-
-    intent = classify_intent(
-
-        question=
-            state["question"],
-
-        history=
-            state.get(
-                "history",
-                []
-            ),
+def classify_intent_node(state):
+    question = state["question"]
+    history = state.get(
+        "history",
+        []
     )
+
+    # --------------------------------------------------
+    # Support both:
+    #
+    # classify_intent(question)
+    #
+    # and:
+    #
+    # classify_intent(question, history)
+    # --------------------------------------------------
+
+    try:
+        intent = classify_intent(
+            question,
+            history
+        )
+
+    except TypeError:
+        intent = classify_intent(
+            question
+        )
 
     return {
         "intent": intent
@@ -148,58 +97,54 @@ def classify_intent_node(
 
 
 # ======================================================
-# QUERY REWRITE
+# REWRITE QUERY NODE
 # ======================================================
 
-def rewrite_query_node(
-    state
-):
+def rewrite_query_node(state):
+    question = state["question"]
 
-    question =
-        state["question"]
-
-    history =
-        state.get(
-            "history",
-            []
-        )
-
+    history = state.get(
+        "history",
+        []
+    )
 
     # --------------------------------------------------
     # No history
     # --------------------------------------------------
 
     if not history:
-
-        rewritten =
-            rewrite_query(
-                question
-            )
-
-        return {
-            "rewritten_query":
-                rewritten
-        }
-
-
-    # --------------------------------------------------
-    # History-aware rewrite
-    # --------------------------------------------------
-
-    history_text =
-        _history_text(
-            history
+        rewritten_query = rewrite_query(
+            question
         )
 
+        return {
+            "rewritten_query": (
+                rewritten_query
+                or question
+            )
+        }
+
+    # --------------------------------------------------
+    # Build history
+    # --------------------------------------------------
+
+    history_text = _history_text(
+        history
+    )
+
+    # --------------------------------------------------
+    # Rewrite prompt
+    # --------------------------------------------------
 
     prompt = f"""
 You are a search query rewriting assistant.
 
-Rewrite the latest user question into a
-standalone query for a document vector database.
+Rewrite the user's latest question into
+a concise standalone search query for a
+document vector database.
 
-Use conversation history to resolve references
-such as:
+Use the conversation history only to resolve
+references such as:
 
 - it
 - this
@@ -217,113 +162,93 @@ Return ONLY the rewritten search query.
 Conversation History:
 {history_text}
 
-Current Question:
+Current User Question:
 {question}
 
 Rewritten Query:
 """
 
+    response = llm.invoke(
+        prompt
+    )
 
-    response =
-        llm.invoke(
-            prompt
-        )
+    rewritten_query = _response_content(
+        response
+    )
 
-
-    rewritten =
-        _content(
-            response
-        )
-
-
-    if not rewritten:
-        rewritten = question
-
+    if not rewritten_query:
+        rewritten_query = question
 
     return {
-        "rewritten_query":
-            rewritten
+        "rewritten_query": rewritten_query
     }
 
 
 # ======================================================
-# RETRIEVE DOCUMENTS
+# RETRIEVE + RERANK NODE
 # ======================================================
 
-def retrieve_documents_node(
-    state
-):
+def retrieve_documents_node(state):
+    rewritten_query = (
+        state.get("rewritten_query")
+        or state["question"]
+    )
 
-    query =
-        state.get(
-            "rewritten_query"
-        ) or state[
-            "question"
-        ]
+    user_id = state[
+        "user_id"
+    ]
 
-    user_id =
-        state[
-            "user_id"
-        ]
+    # --------------------------------------------------
+    # Retrieve candidates
+    # --------------------------------------------------
 
+    results = retrieve_documents(
+        query=rewritten_query,
+        user_id=user_id,
+        limit=8
+    )
 
-    results =
-        retrieve_documents(
-
-            query=query,
-
-            user_id=user_id,
-
-            limit=8,
-        )
-
+    # --------------------------------------------------
+    # No results
+    # --------------------------------------------------
 
     if not results:
-
         return {
-
             "context": "",
-
             "sources": [],
-
             "reranker_scores": [],
-
-            "retrieval_attempted":
-                True,
+            "retrieval_attempted": True,
         }
 
+    # --------------------------------------------------
+    # Rerank
+    # --------------------------------------------------
 
-    reranked =
-        rerank_documents(
+    reranked_results = rerank_documents(
+        query=rewritten_query,
+        results=results,
+        top_k=3
+    )
 
-            query=query,
-
-            results=results,
-
-            top_k=3,
-        )
-
+    # --------------------------------------------------
+    # Build context
+    # --------------------------------------------------
 
     context_parts = []
-
     sources = []
+    reranker_scores = []
 
-    scores = []
+    for item in reranked_results:
+        result = item["result"]
 
+        score = float(
+            item["score"]
+        )
 
-    for item in reranked:
-
-        result =
-            item["result"]
-
-        score =
-            float(
-                item["score"]
-            )
-
-        payload =
-            result.payload or {}
-
+        payload = (
+            result.payload
+            or {}
+        )
 
         text = str(
             payload.get(
@@ -332,147 +257,115 @@ def retrieve_documents_node(
             )
         ).strip()
 
-
         if text:
-
             context_parts.append(
                 text
             )
 
-
         sources.append(
             {
-                "filename":
-                    payload.get(
-                        "filename"
-                    ),
-
-                "page":
-                    payload.get(
-                        "page"
-                    ),
-
-                "document_id":
-                    payload.get(
-                        "document_id"
-                    ),
+                "filename": payload.get(
+                    "filename"
+                ),
+                "page": payload.get(
+                    "page"
+                ),
+                "document_id": payload.get(
+                    "document_id"
+                ),
             }
         )
 
-
-        scores.append(
+        reranker_scores.append(
             score
         )
 
+    context = "\n\n".join(
+        context_parts
+    )
 
     return {
+        "context": context,
+        "sources": sources,
+        "reranker_scores": reranker_scores,
+        "retrieval_attempted": True,
+    }
 
-        "context":
-            "\n\n".join(
-                context_parts
+
+# ======================================================
+# RETRIEVAL EVALUATION NODE
+# ======================================================
+
+def evaluate_retrieval_node(state):
+    context = state.get(
+        "context",
+        ""
+    )
+
+    if not context:
+        return {
+            "retrieval_relevant": False
+        }
+
+    is_relevant = evaluate_retrieval(
+        question=state["question"],
+        context=context
+    )
+
+    return {
+        "retrieval_relevant": bool(
+            is_relevant
+        )
+    }
+
+
+# ======================================================
+# RAG QA ANSWER NODE
+# ======================================================
+
+def generate_answer_node(state):
+    question = state[
+        "question"
+    ]
+
+    context = state.get(
+        "context",
+        ""
+    )
+
+    history = state.get(
+        "history",
+        []
+    )
+
+    history_text = _history_text(
+        history
+    )
+
+    # --------------------------------------------------
+    # No document context
+    # --------------------------------------------------
+
+    if not context:
+        return {
+            "answer": (
+                "I could not find enough "
+                "relevant information in "
+                "your uploaded documents "
+                "to answer that question."
             ),
-
-        "sources":
-            sources,
-
-        "reranker_scores":
-            scores,
-
-        "retrieval_attempted":
-            True,
-    }
-
-
-# ======================================================
-# EVALUATE RETRIEVAL
-# ======================================================
-
-def evaluate_retrieval_node(
-    state
-):
-
-    context =
-        state.get(
-            "context",
-            ""
-        )
-
-
-    if not context:
-
-        return {
-            "retrieval_relevant":
-                False
+            "sources": [],
         }
 
-
-    relevant =
-        evaluate_retrieval(
-
-            question=
-                state["question"],
-
-            context=
-                context,
-        )
-
-
-    return {
-        "retrieval_relevant":
-            bool(relevant)
-    }
-
-
-# ======================================================
-# RAG QA
-# ======================================================
-
-def generate_answer_node(
-    state
-):
-
-    question =
-        state[
-            "question"
-        ]
-
-    context =
-        state.get(
-            "context",
-            ""
-        )
-
-    history =
-        state.get(
-            "history",
-            []
-        )
-
-
-    if not context:
-
-        return {
-
-            "answer":
-                "I could not find enough relevant information in your uploaded documents to answer that question.",
-
-            "sources":
-                [],
-
-        }
-
-
-    history_text =
-        _history_text(
-            history
-        )
-
+    # --------------------------------------------------
+    # Prompt
+    # --------------------------------------------------
 
     prompt = f"""
 You are an AI Study Assistant.
 
 Answer the user's document-related question
-using the provided document context.
+using the supplied document context.
 
 Conversation History:
 {history_text}
@@ -485,56 +378,43 @@ Current User Question:
 
 Rules:
 
-- Use document context as the source of truth.
-- Do not invent facts about the document.
-- Conversation history may resolve references.
-- Do not claim information is in the document if it isn't.
-- Be clear and concise.
+- Use the document context as the source of truth.
+- Do not invent document facts.
+- Do not claim information is present if it is not present.
+- Use conversation history only to resolve references.
+- Give a clear and useful answer.
 
 Answer:
 """
 
-
-    response =
-        llm.invoke(
-            prompt
-        )
-
+    response = llm.invoke(
+        prompt
+    )
 
     return {
-
-        "answer":
-            _content(
-                response
-            )
+        "answer": _response_content(
+            response
+        )
     }
 
 
 # ======================================================
-# GENERAL AI
+# GENERAL AI NODE
 # ======================================================
 
-def general_answer_node(
-    state
-):
+def general_answer_node(state):
+    question = state[
+        "question"
+    ]
 
-    question =
-        state[
-            "question"
-        ]
+    history = state.get(
+        "history",
+        []
+    )
 
-    history =
-        state.get(
-            "history",
-            []
-        )
-
-
-    history_text =
-        _history_text(
-            history
-        )
-
+    history_text = _history_text(
+        history
+    )
 
     prompt = f"""
 You are a general-purpose AI Study Assistant.
@@ -545,38 +425,34 @@ You can answer:
 
 - general knowledge
 - technical concepts
-- AI/ML
+- software engineering
+- AI and machine learning
 - databases
 - networking
 - cloud
-- interview questions
 - system design
-- software engineering
-- career questions
-- explanations
+- interview questions
 - mathematics
 - science
+- career questions
+- explanations
 - other reasonable questions
 
-Conversation history is available so you can
+Use conversation history when needed to
 understand references such as:
 
 - it
 - this
 - that
-- the previous answer
 - the above
-- that algorithm
+- the previous answer
 
-Do not claim that information came from the
-user's documents unless document context was
-actually provided.
+Do not claim that information came from
+the user's uploaded documents unless
+document context was explicitly provided.
 
-If the user asks a technical explanation,
-make the explanation structured and practical.
-
-If the user asks a system-design question,
-include architecture and trade-offs.
+Make technical explanations structured
+and practical.
 
 Conversation History:
 {history_text}
@@ -587,69 +463,47 @@ Current User Question:
 Answer:
 """
 
-
-    response =
-        llm.invoke(
-            prompt
-        )
-
+    response = llm.invoke(
+        prompt
+    )
 
     return {
-
-        "answer":
-            _content(
-                response
-            ),
-
-        "sources":
-            [],
-
-        "retrieval_relevant":
-            None,
-
-        "rewritten_query":
-            None,
+        "answer": _response_content(
+            response
+        ),
+        "sources": [],
+        "retrieval_relevant": None,
+        "rewritten_query": None,
     }
 
 
 # ======================================================
-# CODING / DSA
+# CODING / DSA NODE
 # ======================================================
 
-def coding_answer_node(
-    state
-):
+def coding_answer_node(state):
+    question = state[
+        "question"
+    ]
 
-    question =
-        state[
-            "question"
-        ]
+    history = state.get(
+        "history",
+        []
+    )
 
-    history =
-        state.get(
-            "history",
-            []
-        )
-
-
-    history_text =
-        _history_text(
-            history
-        )
-
+    history_text = _history_text(
+        history
+    )
 
     prompt = f"""
 You are an expert software engineer,
 DSA instructor, competitive programmer,
 debugging expert, and system-design mentor.
 
-Solve the user's coding or technical implementation
-request completely.
+Solve the user's programming or technical
+implementation request completely.
 
-IMPORTANT:
-
-When the user asks for an algorithm or DSA problem,
-use this structure:
+For DSA / algorithm questions use:
 
 ## Problem Understanding
 
@@ -661,11 +515,13 @@ Explain the optimized approach.
 
 ## Algorithm
 
-Give numbered steps.
+1. Step 1
+2. Step 2
+3. Step 3
 
 ## Code
 
-Provide COMPLETE runnable code.
+Provide complete runnable code.
 
 ## Example
 
@@ -689,9 +545,9 @@ Explain important edge cases.
 
 ## Why It Works
 
-Explain correctness and reasoning.
+Explain correctness.
 
-For debugging requests:
+For debugging requests use:
 
 ## Problem
 
@@ -699,19 +555,23 @@ For debugging requests:
 
 ## Fixed Code
 
-Provide the COMPLETE corrected code.
+Provide the complete corrected code.
 
 ## Explanation
 
-Explain the fix.
+Explain the correction.
 
 For project implementation requests:
 
-Start with:
+First provide:
 
 ## File Structure
 
-```text
-project/
-├── ...
-└── ...
+Then provide every important file.
+
+Use:
+
+### File: `src/example/file.py`
+
+```python
+complete code
