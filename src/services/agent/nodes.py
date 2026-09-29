@@ -1,49 +1,35 @@
+# ======================================================
+# AGENT NODES
+# ======================================================
+
+from src.services.intent_classifier import classify_intent
 from src.services.query_rewriter import rewrite_query
 from src.services.retrieval_service import retrieve_documents
 from src.services.retrieval_evaluator import evaluate_retrieval
-from src.services.llm_service import llm
-from src.services.intent_classifier import classify_intent
 from src.services.reranker_service import rerank_documents
+from src.services.llm_service import llm
 
 
 # ======================================================
 # HELPERS
 # ======================================================
 
-def _history_text(history: list[dict] | None) -> str:
+def _history_text(history):
     if not history:
         return ""
 
     lines = []
 
     for message in history[-6:]:
-        role = str(
-            message.get(
-                "role",
-                "",
-            )
-        )
-
-        content = str(
-            message.get(
-                "content",
-                "",
-            )
-        )
-
-        lines.append(
-            f"{role}: {content}"
-        )
+        role = str(message.get("role", ""))
+        content = str(message.get("content", ""))
+        lines.append(f"{role}: {content}")
 
     return "\n".join(lines)
 
 
-def _response_content(response) -> str:
-    content = getattr(
-        response,
-        "content",
-        "",
-    )
+def _response_content(response):
+    content = getattr(response, "content", "")
 
     if isinstance(content, str):
         return content.strip()
@@ -54,14 +40,10 @@ def _response_content(response) -> str:
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
-
             elif isinstance(item, dict):
                 text = item.get("text")
-
                 if text:
-                    parts.append(
-                        str(text)
-                    )
+                    parts.append(str(text))
 
         return "".join(parts).strip()
 
@@ -69,15 +51,12 @@ def _response_content(response) -> str:
 
 
 # ======================================================
-# INTENT NODE
+# INTENT CLASSIFICATION
 # ======================================================
 
 def classify_intent_node(state):
     question = state["question"]
-    history = state.get(
-        "history",
-        [],
-    )
+    history = state.get("history", [])
 
     try:
         intent = classify_intent(
@@ -85,95 +64,67 @@ def classify_intent_node(state):
             history,
         )
     except TypeError:
-        intent = classify_intent(
-            question
-        )
+        intent = classify_intent(question)
 
     return {
-        "intent": intent
+        "intent": intent,
     }
 
 
 # ======================================================
-# QUERY REWRITE NODE
+# QUERY REWRITING
 # ======================================================
 
 def rewrite_query_node(state):
     question = state["question"]
-
-    history = state.get(
-        "history",
-        [],
-    )
+    history = state.get("history", [])
 
     if not history:
-        rewritten_query = rewrite_query(
-            question
-        )
+        rewritten_query = rewrite_query(question)
 
         return {
             "rewritten_query": (
-                rewritten_query
-                or question
-            )
+                rewritten_query or question
+            ),
         }
 
-    history_text = _history_text(
-        history
+    history_text = _history_text(history)
+
+    prompt = (
+        "You are a search query rewriting assistant.\n\n"
+        "Rewrite the latest user question into a "
+        "concise standalone search query for a "
+        "document vector database.\n\n"
+        "Use conversation history only to resolve "
+        "references such as it, this, that, they, "
+        "them, which one, previous answer, or "
+        "previous topic.\n\n"
+        "Do not answer the question.\n"
+        "Return ONLY the rewritten search query.\n\n"
+        "Conversation History:\n"
+        + history_text
+        + "\n\nCurrent User Question:\n"
+        + question
+        + "\n\nRewritten Query:\n"
     )
 
-    prompt = f"""
-You are a search query rewriting assistant.
-
-Rewrite the latest user question into a concise,
-standalone search query for a document vector database.
-
-Use conversation history only to resolve references such as:
-
-- it
-- this
-- that
-- they
-- them
-- which one
-- previous answer
-- previous topic
-
-Do not answer the question.
-
-Return ONLY the rewritten search query.
-
-Conversation History:
-{history_text}
-
-Current User Question:
-{question}
-
-Rewritten Query:
-"""
-
-    response = llm.invoke(
-        prompt
-    )
-
-    rewritten_query = _response_content(
-        response
-    )
+    response = llm.invoke(prompt)
+    rewritten_query = _response_content(response)
 
     if not rewritten_query:
         rewritten_query = question
 
     return {
-        "rewritten_query": rewritten_query
+        "rewritten_query": rewritten_query,
     }
 
 
 # ======================================================
-# RETRIEVAL NODE
+# DOCUMENT RETRIEVAL
 # ======================================================
 
 def retrieve_documents_node(state):
-    rewritten_query = (
+    query = (
         state.get("rewritten_query")
         or state["question"]
     )
@@ -181,7 +132,7 @@ def retrieve_documents_node(state):
     user_id = state["user_id"]
 
     results = retrieve_documents(
-        query=rewritten_query,
+        query=query,
         user_id=user_id,
         limit=8,
     )
@@ -195,7 +146,7 @@ def retrieve_documents_node(state):
         }
 
     reranked_results = rerank_documents(
-        query=rewritten_query,
+        query=query,
         results=results,
         top_k=3,
     )
@@ -207,52 +158,33 @@ def retrieve_documents_node(state):
     for item in reranked_results:
         result = item["result"]
 
-        score = float(
-            item["score"]
-        )
+        score = float(item["score"])
 
         payload = (
-            getattr(
-                result,
-                "payload",
-                None,
-            )
+            getattr(result, "payload", None)
             or {}
         )
 
         text = str(
-            payload.get(
-                "text",
-                "",
-            )
+            payload.get("text", "")
         ).strip()
 
         if text:
-            context_parts.append(
-                text
-            )
+            context_parts.append(text)
 
         sources.append(
             {
-                "filename": payload.get(
-                    "filename"
-                ),
-                "page": payload.get(
-                    "page"
-                ),
+                "filename": payload.get("filename"),
+                "page": payload.get("page"),
                 "document_id": payload.get(
                     "document_id"
                 ),
             }
         )
 
-        reranker_scores.append(
-            score
-        )
+        reranker_scores.append(score)
 
-    context = "\n\n".join(
-        context_parts
-    )
+    context = "\n\n".join(context_parts)
 
     return {
         "context": context,
@@ -267,14 +199,11 @@ def retrieve_documents_node(state):
 # ======================================================
 
 def evaluate_retrieval_node(state):
-    context = state.get(
-        "context",
-        "",
-    )
+    context = state.get("context", "")
 
     if not context:
         return {
-            "retrieval_relevant": False
+            "retrieval_relevant": False,
         }
 
     is_relevant = evaluate_retrieval(
@@ -283,9 +212,7 @@ def evaluate_retrieval_node(state):
     )
 
     return {
-        "retrieval_relevant": bool(
-            is_relevant
-        )
+        "retrieval_relevant": bool(is_relevant),
     }
 
 
@@ -295,65 +222,48 @@ def evaluate_retrieval_node(state):
 
 def generate_answer_node(state):
     question = state["question"]
+    context = state.get("context", "")
+    history = state.get("history", [])
 
-    context = state.get(
-        "context",
-        "",
-    )
-
-    history = state.get(
-        "history",
-        [],
-    )
-
-    history_text = _history_text(
-        history
-    )
+    history_text = _history_text(history)
 
     if not context:
         return {
             "answer": (
                 "I could not find enough relevant "
-                "information in your uploaded documents "
-                "to answer that question."
+                "information in your uploaded "
+                "documents to answer that question."
             ),
             "sources": [],
         }
 
-    prompt = f"""
-You are an AI Study Assistant.
-
-Answer the user's document-related question
-using the provided document context.
-
-Conversation History:
-{history_text}
-
-Document Context:
-{context}
-
-Current User Question:
-{question}
-
-Rules:
-
-- Use the document context as the source of truth.
-- Do not invent document facts.
-- Do not claim something is in the document if it is not.
-- Use conversation history to resolve references.
-- Give a clear and useful answer.
-
-Answer:
-"""
-
-    response = llm.invoke(
-        prompt
+    prompt = (
+        "You are an AI Study Assistant.\n\n"
+        "Answer the user's document-related "
+        "question using the supplied document "
+        "context.\n\n"
+        "Conversation History:\n"
+        + history_text
+        + "\n\nDocument Context:\n"
+        + context
+        + "\n\nCurrent User Question:\n"
+        + question
+        + "\n\nRules:\n"
+        "- Use the document context as the source "
+        "of truth.\n"
+        "- Do not invent document facts.\n"
+        "- Do not claim something is present if it "
+        "is not present.\n"
+        "- Use conversation history to resolve "
+        "references.\n"
+        "- Give a clear and useful answer.\n\n"
+        "Answer:\n"
     )
 
+    response = llm.invoke(prompt)
+
     return {
-        "answer": _response_content(
-            response
-        )
+        "answer": _response_content(response),
     }
 
 
@@ -363,64 +273,48 @@ Answer:
 
 def general_answer_node(state):
     question = state["question"]
+    history = state.get("history", [])
 
-    history = state.get(
-        "history",
-        [],
+    history_text = _history_text(history)
+
+    prompt = (
+        "You are a general-purpose AI Study "
+        "Assistant.\n\n"
+        "Answer the user's question directly.\n\n"
+        "You can answer:\n"
+        "- general knowledge\n"
+        "- technical concepts\n"
+        "- software engineering\n"
+        "- AI and machine learning\n"
+        "- databases\n"
+        "- networking\n"
+        "- cloud\n"
+        "- system design\n"
+        "- interview questions\n"
+        "- mathematics\n"
+        "- science\n"
+        "- career questions\n"
+        "- explanations\n"
+        "- other reasonable questions\n\n"
+        "Use conversation history when needed to "
+        "understand references such as it, this, "
+        "that, the above, or the previous answer.\n\n"
+        "Do not claim that information came from "
+        "the user's uploaded documents unless "
+        "document context was actually supplied.\n\n"
+        "Make technical explanations structured "
+        "and practical.\n\n"
+        "Conversation History:\n"
+        + history_text
+        + "\n\nCurrent User Question:\n"
+        + question
+        + "\n\nAnswer:\n"
     )
 
-    history_text = _history_text(
-        history
-    )
-
-    prompt = f"""
-You are a general-purpose AI Study Assistant.
-
-Answer the user's question directly.
-
-You can answer:
-
-- general knowledge
-- technical concepts
-- software engineering
-- AI and machine learning
-- databases
-- networking
-- cloud
-- system design
-- interview questions
-- mathematics
-- science
-- career questions
-- explanations
-- other reasonable questions
-
-Use conversation history when needed to understand
-references such as "it", "this", "that", "the above",
-or "the previous answer".
-
-Do not claim that information came from the user's
-uploaded documents unless document context was provided.
-
-For technical explanations, be structured and practical.
-
-Conversation History:
-{history_text}
-
-Current User Question:
-{question}
-
-Answer:
-"""
-
-    response = llm.invoke(
-        prompt
-    )
+    response = llm.invoke(prompt)
 
     return {
-        "answer": _response_content(
-            response
-        ),
+        "answer": _response_content(response),
         "sources": [],
         "retrieval_relevant": None,
         "rewritten_query": None,
@@ -433,87 +327,206 @@ Answer:
 
 def coding_answer_node(state):
     question = state["question"]
+    history = state.get("history", [])
 
-    history = state.get(
-        "history",
-        [],
+    history_text = _history_text(history)
+
+    prompt = (
+        "You are an expert software engineer, "
+        "DSA instructor, competitive programmer, "
+        "debugging expert, and system-design mentor.\n\n"
+        "Solve the user's programming or technical "
+        "implementation request completely.\n\n"
+        "For DSA and algorithm questions use:\n\n"
+        "## Problem Understanding\n"
+        "Explain the problem.\n\n"
+        "## Approach\n"
+        "Explain the optimized approach.\n\n"
+        "## Algorithm\n"
+        "Give numbered steps.\n\n"
+        "## Code\n"
+        "Provide complete runnable code.\n\n"
+        "## Example\n"
+        "Input:\n"
+        "...\n\n"
+        "Output:\n"
+        "...\n\n"
+        "## Complexity\n"
+        "Time Complexity: O(...)\n"
+        "Space Complexity: O(...)\n\n"
+        "## Edge Cases\n"
+        "Explain important edge cases.\n\n"
+        "## Why It Works\n"
+        "Explain correctness and reasoning.\n\n"
+        "For debugging requests use:\n\n"
+        "## Problem\n"
+        "## Root Cause\n"
+        "## Fixed Code\n"
+        "## Explanation\n\n"
+        "For project implementation requests:\n\n"
+        "## File Structure\n"
+        "Then provide every important file.\n\n"
+        "For each file use:\n"
+        "File: src/path/file.py\n\n"
+        "Provide complete code.\n\n"
+        "Do not use placeholder code.\n"
+        "Do not say 'rest of the code'.\n\n"
+        "If the user specifies a programming "
+        "language, use that language.\n"
+        "If no language is specified for an "
+        "algorithm problem, use Python.\n\n"
+        "Conversation History:\n"
+        + history_text
+        + "\n\nCurrent User Question:\n"
+        + question
+        + "\n\nAnswer:\n"
     )
 
-    history_text = _history_text(
-        history
+    response = llm.invoke(prompt)
+
+    return {
+        "answer": _response_content(response),
+        "sources": [],
+        "retrieval_relevant": None,
+        "rewritten_query": None,
+    }
+
+
+# ======================================================
+# SUMMARY
+# ======================================================
+
+def summary_node(state):
+    context = state.get("context", "")
+
+    if not context:
+        return {
+            "answer": (
+                "I could not find enough relevant "
+                "information in the uploaded "
+                "documents to create a summary."
+            ),
+            "sources": [],
+        }
+
+    question = state["question"]
+
+    prompt = (
+        "You are an AI Study Assistant.\n\n"
+        "Create a useful summary from the supplied "
+        "document context.\n\n"
+        "Document Context:\n"
+        + context
+        + "\n\nUser Request:\n"
+        + question
+        + "\n\nRules:\n"
+        "- Use only the document context.\n"
+        "- Do not invent facts.\n"
+        "- Preserve important names.\n"
+        "- Preserve dates.\n"
+        "- Preserve technologies.\n"
+        "- Preserve roles.\n"
+        "- Preserve achievements.\n"
+        "- Use headings and bullet points when "
+        "useful.\n\n"
+        "Summary:\n"
     )
 
-    prompt = f"""
-You are an expert software engineer,
-DSA instructor, competitive programmer,
-debugging expert, and system-design mentor.
+    response = llm.invoke(prompt)
 
-Solve the user's programming or technical
-implementation request completely.
+    return {
+        "answer": _response_content(response),
+    }
 
-For DSA and algorithm questions use:
 
-## Problem Understanding
+# ======================================================
+# QUIZ
+# ======================================================
 
-## Approach
+def quiz_node(state):
+    context = state.get("context", "")
 
-## Algorithm
+    if not context:
+        return {
+            "answer": (
+                "I could not find enough relevant "
+                "information in the uploaded "
+                "documents to generate a quiz."
+            ),
+            "sources": [],
+        }
 
-1. Step 1
-2. Step 2
-3. Step 3
+    question = state["question"]
 
-## Code
+    prompt = (
+        "You are an AI Study Assistant.\n\n"
+        "Create a quiz using only the supplied "
+        "document context.\n\n"
+        "User Request:\n"
+        + question
+        + "\n\nDocument Context:\n"
+        + context
+        + "\n\nRules:\n"
+        "- Create clear multiple-choice questions.\n"
+        "- Exactly four options per question.\n"
+        "- Exactly one correct answer.\n"
+        "- Do not invent facts.\n"
+        "- Keep every question grounded in the "
+        "document.\n\n"
+        "Format:\n\n"
+        "Question 1:\n"
+        "<question>\n\n"
+        "A. <option>\n"
+        "B. <option>\n"
+        "C. <option>\n"
+        "D. <option>\n\n"
+        "Correct Answer:\n"
+        "<answer>\n\n"
+        "Question 2:\n"
+        "...\n\n"
+        "Quiz:\n"
+    )
 
-Provide complete runnable code.
+    response = llm.invoke(prompt)
 
-## Example
+    return {
+        "answer": _response_content(response),
+    }
 
-Input:
-...
 
-Output:
-...
+# ======================================================
+# RETRY
+# ======================================================
 
-## Complexity
+def retry_node(state):
+    retry_count = int(
+        state.get(
+            "retry_count",
+            0,
+        )
+    )
 
-Time Complexity:
-O(...)
+    return {
+        "retry_count": retry_count + 1,
+        "context": "",
+        "sources": [],
+        "reranker_scores": [],
+        "retrieval_attempted": False,
+        "retrieval_relevant": False,
+    }
 
-Space Complexity:
-O(...)
 
-## Edge Cases
+# ======================================================
+# REJECT
+# ======================================================
 
-...
-
-## Why It Works
-
-...
-
-For debugging:
-
-## Problem
-
-## Root Cause
-
-## Fixed Code
-
-Provide complete corrected code.
-
-## Explanation
-
-...
-
-For project implementation requests:
-
-## File Structure
-
-Then give every important file.
-
-For each file:
-
-### File: `src/path/file.py`
-
-```python
-complete code
+def reject_node(state):
+    return {
+        "answer": (
+            "I could not find enough relevant "
+            "information in your uploaded "
+            "documents to answer that "
+            "document-specific question."
+        ),
+        "sources": [],
+    }
