@@ -1,7 +1,3 @@
-# ======================================================
-# AGENT NODES
-# ======================================================
-
 from src.services.query_rewriter import rewrite_query
 from src.services.retrieval_service import retrieve_documents
 from src.services.retrieval_evaluator import evaluate_retrieval
@@ -14,15 +10,26 @@ from src.services.reranker_service import rerank_documents
 # HELPERS
 # ======================================================
 
-def _history_text(history):
+def _history_text(history: list[dict] | None) -> str:
     if not history:
         return ""
 
     lines = []
 
     for message in history[-6:]:
-        role = str(message.get("role", ""))
-        content = str(message.get("content", ""))
+        role = str(
+            message.get(
+                "role",
+                "",
+            )
+        )
+
+        content = str(
+            message.get(
+                "content",
+                "",
+            )
+        )
 
         lines.append(
             f"{role}: {content}"
@@ -31,11 +38,11 @@ def _history_text(history):
     return "\n".join(lines)
 
 
-def _response_content(response):
+def _response_content(response) -> str:
     content = getattr(
         response,
         "content",
-        ""
+        "",
     )
 
     if isinstance(content, str):
@@ -52,7 +59,9 @@ def _response_content(response):
                 text = item.get("text")
 
                 if text:
-                    parts.append(str(text))
+                    parts.append(
+                        str(text)
+                    )
 
         return "".join(parts).strip()
 
@@ -60,32 +69,21 @@ def _response_content(response):
 
 
 # ======================================================
-# CLASSIFY INTENT NODE
+# INTENT NODE
 # ======================================================
 
 def classify_intent_node(state):
     question = state["question"]
     history = state.get(
         "history",
-        []
+        [],
     )
-
-    # --------------------------------------------------
-    # Support both:
-    #
-    # classify_intent(question)
-    #
-    # and:
-    #
-    # classify_intent(question, history)
-    # --------------------------------------------------
 
     try:
         intent = classify_intent(
             question,
-            history
+            history,
         )
-
     except TypeError:
         intent = classify_intent(
             question
@@ -97,7 +95,7 @@ def classify_intent_node(state):
 
 
 # ======================================================
-# REWRITE QUERY NODE
+# QUERY REWRITE NODE
 # ======================================================
 
 def rewrite_query_node(state):
@@ -105,12 +103,8 @@ def rewrite_query_node(state):
 
     history = state.get(
         "history",
-        []
+        [],
     )
-
-    # --------------------------------------------------
-    # No history
-    # --------------------------------------------------
 
     if not history:
         rewritten_query = rewrite_query(
@@ -124,27 +118,17 @@ def rewrite_query_node(state):
             )
         }
 
-    # --------------------------------------------------
-    # Build history
-    # --------------------------------------------------
-
     history_text = _history_text(
         history
     )
 
-    # --------------------------------------------------
-    # Rewrite prompt
-    # --------------------------------------------------
-
     prompt = f"""
 You are a search query rewriting assistant.
 
-Rewrite the user's latest question into
-a concise standalone search query for a
-document vector database.
+Rewrite the latest user question into a concise,
+standalone search query for a document vector database.
 
-Use the conversation history only to resolve
-references such as:
+Use conversation history only to resolve references such as:
 
 - it
 - this
@@ -185,7 +169,7 @@ Rewritten Query:
 
 
 # ======================================================
-# RETRIEVE + RERANK NODE
+# RETRIEVAL NODE
 # ======================================================
 
 def retrieve_documents_node(state):
@@ -194,23 +178,13 @@ def retrieve_documents_node(state):
         or state["question"]
     )
 
-    user_id = state[
-        "user_id"
-    ]
-
-    # --------------------------------------------------
-    # Retrieve candidates
-    # --------------------------------------------------
+    user_id = state["user_id"]
 
     results = retrieve_documents(
         query=rewritten_query,
         user_id=user_id,
-        limit=8
+        limit=8,
     )
-
-    # --------------------------------------------------
-    # No results
-    # --------------------------------------------------
 
     if not results:
         return {
@@ -220,19 +194,11 @@ def retrieve_documents_node(state):
             "retrieval_attempted": True,
         }
 
-    # --------------------------------------------------
-    # Rerank
-    # --------------------------------------------------
-
     reranked_results = rerank_documents(
         query=rewritten_query,
         results=results,
-        top_k=3
+        top_k=3,
     )
-
-    # --------------------------------------------------
-    # Build context
-    # --------------------------------------------------
 
     context_parts = []
     sources = []
@@ -246,14 +212,18 @@ def retrieve_documents_node(state):
         )
 
         payload = (
-            result.payload
+            getattr(
+                result,
+                "payload",
+                None,
+            )
             or {}
         )
 
         text = str(
             payload.get(
                 "text",
-                ""
+                "",
             )
         ).strip()
 
@@ -293,13 +263,13 @@ def retrieve_documents_node(state):
 
 
 # ======================================================
-# RETRIEVAL EVALUATION NODE
+# RETRIEVAL EVALUATION
 # ======================================================
 
 def evaluate_retrieval_node(state):
     context = state.get(
         "context",
-        ""
+        "",
     )
 
     if not context:
@@ -309,7 +279,7 @@ def evaluate_retrieval_node(state):
 
     is_relevant = evaluate_retrieval(
         question=state["question"],
-        context=context
+        context=context,
     )
 
     return {
@@ -320,52 +290,41 @@ def evaluate_retrieval_node(state):
 
 
 # ======================================================
-# RAG QA ANSWER NODE
+# DOCUMENT QA
 # ======================================================
 
 def generate_answer_node(state):
-    question = state[
-        "question"
-    ]
+    question = state["question"]
 
     context = state.get(
         "context",
-        ""
+        "",
     )
 
     history = state.get(
         "history",
-        []
+        [],
     )
 
     history_text = _history_text(
         history
     )
 
-    # --------------------------------------------------
-    # No document context
-    # --------------------------------------------------
-
     if not context:
         return {
             "answer": (
-                "I could not find enough "
-                "relevant information in "
-                "your uploaded documents "
+                "I could not find enough relevant "
+                "information in your uploaded documents "
                 "to answer that question."
             ),
             "sources": [],
         }
 
-    # --------------------------------------------------
-    # Prompt
-    # --------------------------------------------------
-
     prompt = f"""
 You are an AI Study Assistant.
 
 Answer the user's document-related question
-using the supplied document context.
+using the provided document context.
 
 Conversation History:
 {history_text}
@@ -380,8 +339,8 @@ Rules:
 
 - Use the document context as the source of truth.
 - Do not invent document facts.
-- Do not claim information is present if it is not present.
-- Use conversation history only to resolve references.
+- Do not claim something is in the document if it is not.
+- Use conversation history to resolve references.
 - Give a clear and useful answer.
 
 Answer:
@@ -399,17 +358,15 @@ Answer:
 
 
 # ======================================================
-# GENERAL AI NODE
+# GENERAL AI
 # ======================================================
 
 def general_answer_node(state):
-    question = state[
-        "question"
-    ]
+    question = state["question"]
 
     history = state.get(
         "history",
-        []
+        [],
     )
 
     history_text = _history_text(
@@ -438,21 +395,14 @@ You can answer:
 - explanations
 - other reasonable questions
 
-Use conversation history when needed to
-understand references such as:
+Use conversation history when needed to understand
+references such as "it", "this", "that", "the above",
+or "the previous answer".
 
-- it
-- this
-- that
-- the above
-- the previous answer
+Do not claim that information came from the user's
+uploaded documents unless document context was provided.
 
-Do not claim that information came from
-the user's uploaded documents unless
-document context was explicitly provided.
-
-Make technical explanations structured
-and practical.
+For technical explanations, be structured and practical.
 
 Conversation History:
 {history_text}
@@ -478,17 +428,15 @@ Answer:
 
 
 # ======================================================
-# CODING / DSA NODE
+# CODING / DSA
 # ======================================================
 
 def coding_answer_node(state):
-    question = state[
-        "question"
-    ]
+    question = state["question"]
 
     history = state.get(
         "history",
-        []
+        [],
     )
 
     history_text = _history_text(
@@ -503,15 +451,11 @@ debugging expert, and system-design mentor.
 Solve the user's programming or technical
 implementation request completely.
 
-For DSA / algorithm questions use:
+For DSA and algorithm questions use:
 
 ## Problem Understanding
 
-Explain the problem.
-
 ## Approach
-
-Explain the optimized approach.
 
 ## Algorithm
 
@@ -541,13 +485,13 @@ O(...)
 
 ## Edge Cases
 
-Explain important edge cases.
+...
 
 ## Why It Works
 
-Explain correctness.
+...
 
-For debugging requests use:
+For debugging:
 
 ## Problem
 
@@ -555,23 +499,21 @@ For debugging requests use:
 
 ## Fixed Code
 
-Provide the complete corrected code.
+Provide complete corrected code.
 
 ## Explanation
 
-Explain the correction.
+...
 
 For project implementation requests:
 
-First provide:
-
 ## File Structure
 
-Then provide every important file.
+Then give every important file.
 
-Use:
+For each file:
 
-### File: `src/example/file.py`
+### File: `src/path/file.py`
 
 ```python
 complete code
