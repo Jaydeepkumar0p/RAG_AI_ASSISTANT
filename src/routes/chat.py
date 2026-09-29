@@ -1,7 +1,3 @@
-# ======================================================
-# CHAT ROUTE
-# ======================================================
-
 from fastapi import (
     APIRouter,
     Depends,
@@ -33,6 +29,53 @@ router = APIRouter(
 
 
 # ======================================================
+# USER ID HELPER
+# ======================================================
+
+def _get_user_id(
+    current_user,
+) -> str:
+    if isinstance(
+        current_user,
+        dict,
+    ):
+        value = (
+            current_user.get("_id")
+            or current_user.get("id")
+            or current_user.get("user_id")
+        )
+
+    else:
+        value = (
+            getattr(
+                current_user,
+                "_id",
+                None,
+            )
+            or
+            getattr(
+                current_user,
+                "id",
+                None,
+            )
+            or
+            getattr(
+                current_user,
+                "user_id",
+                None,
+            )
+        )
+
+    if value is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authenticated user.",
+        )
+
+    return str(value)
+
+
+# ======================================================
 # POST /chat
 # ======================================================
 
@@ -60,8 +103,8 @@ async def chat(
     # Authenticated user
     # --------------------------------------------------
 
-    user_id = str(
-        current_user["_id"]
+    user_id = _get_user_id(
+        current_user
     )
 
     # --------------------------------------------------
@@ -69,8 +112,10 @@ async def chat(
     # --------------------------------------------------
 
     if not conversation_id:
-        conversation_id = create_conversation(
-            user_id
+        conversation_id = str(
+            create_conversation(
+                user_id
+            )
         )
 
     else:
@@ -82,11 +127,11 @@ async def chat(
         if not conversation:
             raise HTTPException(
                 status_code=404,
-                detail="Conversation not found",
+                detail="Conversation not found.",
             )
 
     # --------------------------------------------------
-    # Run AI assistant
+    # AI processing
     # --------------------------------------------------
 
     try:
@@ -100,7 +145,10 @@ async def chat(
         raise HTTPException(
             status_code=400,
             detail=str(exc),
-        )
+        ) from exc
+
+    except HTTPException:
+        raise
 
     except Exception as exc:
         print(
@@ -111,7 +159,7 @@ async def chat(
         raise HTTPException(
             status_code=500,
             detail="Failed to process the question.",
-        )
+        ) from exc
 
     # --------------------------------------------------
     # Response
