@@ -1,25 +1,5 @@
-# ======================================================
-# LIGHTWEIGHT RERANKER
-# ======================================================
-#
-# This reranker DOES NOT use an LLM.
-#
-# It combines:
-#
-# 1. Qdrant semantic similarity score
-# 2. Lexical token overlap
-#
-# Final score:
-#
-#     0.75 * semantic_score
-#   + 0.25 * lexical_score
-#
-# This keeps the service lightweight and avoids
-# loading another ML model such as CrossEncoder.
-#
-# ======================================================
-
 import re
+
 from typing import Any
 
 
@@ -27,17 +7,9 @@ from typing import Any
 # TOKENIZATION
 # ======================================================
 
-def _tokens(text: str) -> set[str]:
-    """
-    Convert text into a normalized set of tokens.
-
-    Example:
-
-        "Python FastAPI API"
-            ↓
-        {"python", "fastapi", "api"}
-    """
-
+def _tokens(
+    text: str,
+) -> set[str]:
     words = re.findall(
         r"[a-zA-Z0-9_]+",
         str(text or "").lower(),
@@ -51,29 +23,13 @@ def _tokens(text: str) -> set[str]:
 
 
 # ======================================================
-# LEXICAL OVERLAP SCORE
+# LEXICAL OVERLAP
 # ======================================================
 
 def _overlap_score(
     query: str,
     document: str,
 ) -> float:
-    """
-    Calculate the percentage of query tokens that
-    also appear in the document.
-
-    Example:
-
-        query:
-            "python fastapi"
-
-        document:
-            "This project uses Python and FastAPI"
-
-        score:
-            1.0
-    """
-
     query_tokens = _tokens(
         query
     )
@@ -92,23 +48,19 @@ def _overlap_score(
     )
 
     return (
-        overlap /
+        overlap
+        /
         len(query_tokens)
     )
 
 
 # ======================================================
-# QDRANT SEMANTIC SCORE
+# QDRANT SCORE
 # ======================================================
 
 def _qdrant_score(
     result: Any,
 ) -> float:
-    """
-    Safely extract the similarity score returned
-    by Qdrant.
-    """
-
     score = getattr(
         result,
         "score",
@@ -128,7 +80,7 @@ def _qdrant_score(
 
 
 # ======================================================
-# RERANK DOCUMENTS
+# RERANK
 # ======================================================
 
 def rerank_documents(
@@ -136,47 +88,13 @@ def rerank_documents(
     results: list,
     top_k: int = 3,
 ) -> list[dict]:
-    """
-    Rerank retrieved Qdrant results.
-
-    Parameters
-    ----------
-    query:
-        User's search query.
-
-    results:
-        Qdrant search results.
-
-    top_k:
-        Number of final documents to return.
-
-    Returns
-    -------
-    list[dict]
-
-    Example:
-
-    [
-        {
-            "score": 0.91,
-            "result": qdrant_result
-        }
-    ]
-    """
 
     if not results:
         return []
 
-
     ranked = []
 
-
-    # ==================================================
-    # SCORE EACH RESULT
-    # ==================================================
-
     for result in results:
-
         payload = (
             getattr(
                 result,
@@ -186,7 +104,6 @@ def rerank_documents(
             or {}
         )
 
-
         text = str(
             payload.get(
                 "text",
@@ -194,77 +111,53 @@ def rerank_documents(
             )
         )
 
-
-        # ----------------------------------------------
-        # Qdrant semantic score
-        # ----------------------------------------------
-
-        vector_score = _qdrant_score(
-            result
-        )
-
-
-        # ----------------------------------------------
-        # Exact / lexical overlap
-        # ----------------------------------------------
-
-        lexical_score = _overlap_score(
-            query,
-            text,
-        )
-
-
-        # ----------------------------------------------
-        # Combined score
-        #
-        # Semantic similarity:
-        #       75%
-        #
-        # Lexical overlap:
-        #       25%
-        # ----------------------------------------------
-
-        combined_score = (
-            0.75 * vector_score
-        ) + (
-            0.25 * lexical_score
-        )
-
-
-        ranked.append(
-            (
-                float(combined_score),
-                result,
+        semantic_score = (
+            _qdrant_score(
+                result
             )
         )
 
+        lexical_score = (
+            _overlap_score(
+                query,
+                text,
+            )
+        )
 
-    # ==================================================
-    # SORT HIGHEST SCORE FIRST
-    # ==================================================
+        combined_score = (
+            0.75
+            *
+            semantic_score
+        ) + (
+            0.25
+            *
+            lexical_score
+        )
+
+        ranked.append(
+            (
+                float(
+                    combined_score
+                ),
+                result,
+            )
+        )
 
     ranked.sort(
         key=lambda item: item[0],
         reverse=True,
     )
 
+    safe_top_k = max(
+        1,
+        int(top_k),
+    )
 
-    # ==================================================
-    # RETURN TOP-K
-    # ==================================================
-
-    output = []
-
-    for score, result in ranked[
-        :max(1, int(top_k))
-    ]:
-
-        output.append(
-            {
-                "score": float(score),
-                "result": result,
-            }
-        )
-
-
-    return output
+    return [
+        {
+            "score": float(score),
+            "result": result,
+        }
+        for score, result
+        in ranked[:safe_top_k]
+    ]
