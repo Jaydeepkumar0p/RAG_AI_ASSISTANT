@@ -1,12 +1,10 @@
-from langgraph.graph import (
-    StateGraph,
-    START,
-    END,
-)
+# ======================================================
+# LANGGRAPH AGENT
+# ======================================================
 
-from src.services.agent.state import (
-    AgentState,
-)
+from langgraph.graph import StateGraph, START, END
+
+from src.services.agent.state import AgentState
 
 from src.services.agent.nodes import (
     classify_intent_node,
@@ -24,128 +22,76 @@ from src.services.agent.nodes import (
 
 
 # ======================================================
-# INTENT ROUTING
+# ROUTE AFTER INTENT CLASSIFICATION
 # ======================================================
 
-def route_after_intent(
-    state: AgentState
-):
+def route_after_intent(state: AgentState) -> str:
+    intent = state.get("intent", "GENERAL")
 
-    intent =
-        state.get(
-            "intent",
-            "GENERAL"
-        )
-
-
-    # ----------------------------------------------
-    # RAG
-    # ----------------------------------------------
-
-    if intent in {
-        "QA",
-        "SUMMARY",
-        "QUIZ",
-    }:
-
+    if intent in {"QA", "SUMMARY", "QUIZ"}:
         return "rag"
 
-
-    # ----------------------------------------------
-    # CODING
-    # ----------------------------------------------
-
     if intent == "CODING":
-
         return "coding"
-
-
-    # ----------------------------------------------
-    # GENERAL
-    # ----------------------------------------------
 
     return "general"
 
 
 # ======================================================
-# RETRIEVAL ROUTING
+# ROUTE AFTER RETRIEVAL EVALUATION
 # ======================================================
 
-def route_after_evaluation(
-    state: AgentState
-):
-
-    relevant =
-        bool(
-            state.get(
-                "retrieval_relevant",
-                False
-            )
+def route_after_evaluation(state: AgentState) -> str:
+    relevant = bool(
+        state.get(
+            "retrieval_relevant",
+            False,
         )
-
+    )
 
     if relevant:
-
-        intent =
-            state.get(
-                "intent",
-                "QA"
-            )
-
+        intent = state.get(
+            "intent",
+            "QA",
+        )
 
         if intent == "SUMMARY":
             return "summary"
 
-
         if intent == "QUIZ":
             return "quiz"
 
-
         return "qa"
 
-
-    # ----------------------------------------------
-    # Retry
-    # ----------------------------------------------
-
-    retry_count =
-        int(
-            state.get(
-                "retry_count",
-                0
-            )
+    retry_count = int(
+        state.get(
+            "retry_count",
+            0,
         )
+    )
 
-
-    max_retries =
-        int(
-            state.get(
-                "max_retries",
-                1
-            )
+    max_retries = int(
+        state.get(
+            "max_retries",
+            1,
         )
-
+    )
 
     if retry_count < max_retries:
-
         return "retry"
-
 
     return "reject"
 
 
 # ======================================================
-# GRAPH
+# CREATE GRAPH
 # ======================================================
 
-builder =
-    StateGraph(
-        AgentState
-    )
+builder = StateGraph(AgentState)
 
 
 # ======================================================
-# NODES
+# REGISTER NODES
 # ======================================================
 
 builder.add_node(
@@ -215,25 +161,16 @@ builder.add_edge(
 
 
 # ======================================================
-# ROUTE BY INTENT
+# INTENT ROUTING
 # ======================================================
 
 builder.add_conditional_edges(
-
     "classify_intent",
-
     route_after_intent,
-
     {
-
-        "rag":
-            "rewrite_query",
-
-        "coding":
-            "coding",
-
-        "general":
-            "general",
+        "rag": "rewrite_query",
+        "coding": "coding",
+        "general": "general",
     },
 )
 
@@ -258,27 +195,14 @@ builder.add_edge(
 # ======================================================
 
 builder.add_conditional_edges(
-
     "evaluate",
-
     route_after_evaluation,
-
     {
-
-        "qa":
-            "qa",
-
-        "summary":
-            "summary",
-
-        "quiz":
-            "quiz",
-
-        "retry":
-            "retry",
-
-        "reject":
-            "reject",
+        "qa": "qa",
+        "summary": "summary",
+        "quiz": "quiz",
+        "retry": "retry",
+        "reject": "reject",
     },
 )
 
@@ -294,7 +218,7 @@ builder.add_edge(
 
 
 # ======================================================
-# END
+# END NODES
 # ======================================================
 
 builder.add_edge(
@@ -332,5 +256,4 @@ builder.add_edge(
 # COMPILE
 # ======================================================
 
-agent_graph =
-    builder.compile()
+agent_graph = builder.compile()
