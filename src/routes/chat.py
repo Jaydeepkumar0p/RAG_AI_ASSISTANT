@@ -1,39 +1,35 @@
+# ======================================================
+# CHAT ROUTE
+# ======================================================
+
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException
-)
-
-from fastapi.responses import (
-    StreamingResponse
+    HTTPException,
 )
 
 from src.middleware.authmiddleware import (
-    get_current_active_user
-)
-
-from src.services.qa_service import (
-    answer_question
-)
-
-from src.services.stream_service import (
-    stream_chat
+    get_current_active_user,
 )
 
 from src.services.conversation_service import (
     create_conversation,
-    get_conversation
+    get_conversation,
+)
+
+from src.services.qa_service import (
+    answer_question,
 )
 
 
 router = APIRouter(
     prefix="/chat",
-    tags=["Chat"]
+    tags=["Chat"],
 )
 
 
 # ======================================================
-# NORMAL CHAT
+# POST /chat
 # ======================================================
 
 @router.post("")
@@ -41,74 +37,122 @@ async def chat(
 
     question: str,
 
-    conversation_id: str | None = None,
+    conversation_id:
+        str | None = None,
 
     current_user=Depends(
         get_current_active_user
-    )
+    ),
 ):
-
-    # --------------------------------------------------
-    # Get authenticated user
-    # --------------------------------------------------
-
-    user_id = str(
-        current_user["_id"]
-    )
 
     # --------------------------------------------------
     # Validate question
     # --------------------------------------------------
 
-    question = question.strip()
+    question =
+        question.strip()
+
 
     if not question:
 
         raise HTTPException(
-            status_code=400,
-            detail="Question cannot be empty"
+
+            status_code=422,
+
+            detail=
+                "Question cannot be empty.",
         )
 
+
     # --------------------------------------------------
-    # Create conversation
+    # Authenticated user
+    # --------------------------------------------------
+
+    user_id =
+        str(
+            current_user["_id"]
+        )
+
+
+    # --------------------------------------------------
+    # Create conversation if needed
     # --------------------------------------------------
 
     if not conversation_id:
 
-        conversation_id = create_conversation(
-            user_id=user_id
-        )
-
-    # --------------------------------------------------
-    # Verify existing conversation
-    # --------------------------------------------------
+        conversation_id =
+            create_conversation(
+                user_id
+            )
 
     else:
 
-        conversation = get_conversation(
-            conversation_id=conversation_id,
-            user_id=user_id
-        )
+        conversation =
+            get_conversation(
+
+                conversation_id=
+                    conversation_id,
+
+                user_id=
+                    user_id,
+            )
+
 
         if not conversation:
 
             raise HTTPException(
+
                 status_code=404,
-                detail="Conversation not found"
+
+                detail=
+                    "Conversation not found",
             )
 
+
     # --------------------------------------------------
-    # Run Agentic RAG
+    # Run assistant
     # --------------------------------------------------
 
-    result = answer_question(
+    try:
 
-        question=question,
+        result =
+            answer_question(
 
-        user_id=user_id,
+                question=
+                    question,
 
-        conversation_id=conversation_id
-    )
+                user_id=
+                    user_id,
+
+                conversation_id=
+                    conversation_id,
+            )
+
+    except ValueError as exc:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail=
+                str(exc),
+        )
+
+    except Exception as exc:
+
+        print(
+            "Chat processing error:",
+            repr(exc)
+        )
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=
+                "Failed to process the question.",
+        )
+
 
     # --------------------------------------------------
     # Response
@@ -119,132 +163,5 @@ async def chat(
         "conversation_id":
             conversation_id,
 
-        "question":
-            result["question"],
-
-        "intent":
-            result.get(
-                "intent",
-                "QA"
-            ),
-
-        "rewritten_query":
-            result.get(
-                "rewritten_query",
-                ""
-            ),
-
-        "retrieval_relevant":
-            result.get(
-                "retrieval_relevant",
-                False
-            ),
-
-        "answer":
-            result.get(
-                "answer",
-                ""
-            ),
-
-        "sources":
-            result.get(
-                "sources",
-                []
-            )
+        **result,
     }
-
-
-# ======================================================
-# STREAM CHAT
-# ======================================================
-
-@router.post("/stream")
-async def stream_chat_endpoint(
-
-    question: str,
-
-    conversation_id: str | None = None,
-
-    current_user=Depends(
-        get_current_active_user
-    )
-):
-
-    # --------------------------------------------------
-    # Get authenticated user
-    # --------------------------------------------------
-
-    user_id = str(
-        current_user["_id"]
-    )
-
-    # --------------------------------------------------
-    # Validate question
-    # --------------------------------------------------
-
-    question = question.strip()
-
-    if not question:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Question cannot be empty"
-        )
-
-    # --------------------------------------------------
-    # Create conversation
-    # --------------------------------------------------
-
-    if not conversation_id:
-
-        conversation_id = create_conversation(
-            user_id=user_id
-        )
-
-    # --------------------------------------------------
-    # Verify existing conversation
-    # --------------------------------------------------
-
-    else:
-
-        conversation = get_conversation(
-            conversation_id=conversation_id,
-            user_id=user_id
-        )
-
-        if not conversation:
-
-            raise HTTPException(
-                status_code=404,
-                detail="Conversation not found"
-            )
-
-    # --------------------------------------------------
-    # Streaming response
-    # --------------------------------------------------
-
-    return StreamingResponse(
-
-        stream_chat(
-
-            question=question,
-
-            user_id=user_id,
-
-            conversation_id=conversation_id
-        ),
-
-        media_type="text/event-stream",
-
-        headers={
-
-            "Cache-Control":
-                "no-cache",
-
-            "X-Accel-Buffering":
-                "no",
-
-            "Connection":
-                "keep-alive"
-        }
-    )
