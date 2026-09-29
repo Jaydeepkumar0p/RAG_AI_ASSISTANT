@@ -22,6 +22,10 @@ from src.services.qa_service import (
 )
 
 
+# ======================================================
+# ROUTER
+# ======================================================
+
 router = APIRouter(
     prefix="/chat",
     tags=["Chat"],
@@ -34,134 +38,86 @@ router = APIRouter(
 
 @router.post("")
 async def chat(
-
     question: str,
-
-    conversation_id:
-        str | None = None,
-
+    conversation_id: str | None = None,
     current_user=Depends(
         get_current_active_user
     ),
 ):
-
     # --------------------------------------------------
     # Validate question
     # --------------------------------------------------
 
-    question =
-        question.strip()
-
+    question = question.strip()
 
     if not question:
-
         raise HTTPException(
-
             status_code=422,
-
-            detail=
-                "Question cannot be empty.",
+            detail="Question cannot be empty.",
         )
-
 
     # --------------------------------------------------
     # Authenticated user
     # --------------------------------------------------
 
-    user_id =
-        str(
-            current_user["_id"]
-        )
-
+    user_id = str(
+        current_user["_id"]
+    )
 
     # --------------------------------------------------
-    # Create conversation if needed
+    # Conversation
     # --------------------------------------------------
 
     if not conversation_id:
-
-        conversation_id =
-            create_conversation(
-                user_id
-            )
+        conversation_id = create_conversation(
+            user_id
+        )
 
     else:
-
-        conversation =
-            get_conversation(
-
-                conversation_id=
-                    conversation_id,
-
-                user_id=
-                    user_id,
-            )
-
+        conversation = get_conversation(
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
 
         if not conversation:
-
             raise HTTPException(
-
                 status_code=404,
-
-                detail=
-                    "Conversation not found",
+                detail="Conversation not found",
             )
 
-
     # --------------------------------------------------
-    # Run assistant
+    # Run AI assistant
     # --------------------------------------------------
 
     try:
-
-        result =
-            answer_question(
-
-                question=
-                    question,
-
-                user_id=
-                    user_id,
-
-                conversation_id=
-                    conversation_id,
-            )
+        result = answer_question(
+            question=question,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
 
     except ValueError as exc:
-
         raise HTTPException(
-
             status_code=400,
-
-            detail=
-                str(exc),
+            detail=str(exc),
         )
 
     except Exception as exc:
-
         print(
             "Chat processing error:",
-            repr(exc)
+            repr(exc),
         )
 
         raise HTTPException(
-
             status_code=500,
-
-            detail=
-                "Failed to process the question.",
+            detail="Failed to process the question.",
         )
-
 
     # --------------------------------------------------
     # Response
     # --------------------------------------------------
 
     return {
-
-        "conversation_id":
-            conversation_id,
-
+        "conversation_id": conversation_id,
         **result,
     }
