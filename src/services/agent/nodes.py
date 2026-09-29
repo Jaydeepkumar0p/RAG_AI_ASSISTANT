@@ -1,26 +1,145 @@
-from src.services.query_rewriter import rewrite_query
-from src.services.retrieval_service import retrieve_documents
-from src.services.retrieval_evaluator import evaluate_retrieval
-from src.services.llm_service import llm
-from src.services.intent_classifier import classify_intent
+# ======================================================
+# AGENT NODES
+# ======================================================
+
+from src.services.intent_classifier import (
+    classify_intent,
+)
+
+from src.services.query_rewriter import (
+    rewrite_query,
+)
+
+from src.services.retrieval_service import (
+    retrieve_documents,
+)
+
+from src.services.retrieval_evaluator import (
+    evaluate_retrieval,
+)
 
 from src.services.reranker_service import (
-    rerank_documents
+    rerank_documents,
 )
 
-from src.services.multi_query_service import (
-    generate_search_queries
+from src.services.llm_service import (
+    llm,
 )
 
 
 # ======================================================
-# CLASSIFY INTENT NODE
+# HELPERS
 # ======================================================
 
-def classify_intent_node(state):
+def _history_text(
+    history: list[dict] | None
+) -> str:
+
+    if not history:
+        return ""
+
+    parts = []
+
+    for message in history[-6:]:
+
+        role = str(
+            message.get(
+                "role",
+                ""
+            )
+        )
+
+        content = str(
+            message.get(
+                "content",
+                ""
+            )
+        )
+
+        parts.append(
+            f"{role}: {content}"
+        )
+
+    return "\n".join(parts)
+
+
+def _content(
+    response
+) -> str:
+
+    value = getattr(
+        response,
+        "content",
+        ""
+    )
+
+    if isinstance(
+        value,
+        str
+    ):
+
+        return value.strip()
+
+
+    if isinstance(
+        value,
+        list
+    ):
+
+        parts = []
+
+        for item in value:
+
+            if isinstance(
+                item,
+                str
+            ):
+                parts.append(
+                    item
+                )
+
+            elif isinstance(
+                item,
+                dict
+            ):
+
+                text = item.get(
+                    "text"
+                )
+
+                if text:
+                    parts.append(
+                        str(text)
+                    )
+
+        return "".join(
+            parts
+        ).strip()
+
+
+    return str(
+        value
+    ).strip()
+
+
+# ======================================================
+# CLASSIFY
+# ======================================================
+
+def classify_intent_node(
+    state
+):
 
     intent = classify_intent(
-        state["question"]
+
+        question=
+            state["question"],
+
+        history=
+            state.get(
+                "history",
+                []
+            ),
     )
 
     return {
@@ -29,58 +148,65 @@ def classify_intent_node(state):
 
 
 # ======================================================
-# REWRITE QUERY NODE
+# QUERY REWRITE
 # ======================================================
 
-def rewrite_query_node(state):
+def rewrite_query_node(
+    state
+):
 
-    question = state["question"]
+    question =
+        state["question"]
 
-    history = state.get(
-        "history",
-        []
-    )
-
-    history_text = ""
-
-    for message in history[-6:]:
-
-        history_text += (
-            f'{message.get("role", "")}: '
-            f'{message.get("content", "")}\n'
+    history =
+        state.get(
+            "history",
+            []
         )
+
 
     # --------------------------------------------------
     # No history
     # --------------------------------------------------
 
-    if not history_text:
+    if not history:
 
-        rewritten_query = rewrite_query(
-            question
-        )
+        rewritten =
+            rewrite_query(
+                question
+            )
 
         return {
-            "rewritten_query": rewritten_query
+            "rewritten_query":
+                rewritten
         }
 
+
     # --------------------------------------------------
-    # Context-aware rewriting
+    # History-aware rewrite
     # --------------------------------------------------
+
+    history_text =
+        _history_text(
+            history
+        )
+
 
     prompt = f"""
 You are a search query rewriting assistant.
 
-Rewrite the user's latest question into a
-clear standalone search query for a vector database.
+Rewrite the latest user question into a
+standalone query for a document vector database.
 
-Use the conversation history to resolve references
+Use conversation history to resolve references
 such as:
 
 - it
 - this
 - that
 - they
+- them
+- which one
 - previous answer
 - previous topic
 
@@ -89,157 +215,70 @@ Do not answer the question.
 Return ONLY the rewritten search query.
 
 Conversation History:
-
 {history_text}
 
-Current User Question:
-
+Current Question:
 {question}
 
-Rewritten Search Query:
+Rewritten Query:
 """
 
-    response = llm.invoke(
-        prompt
-    )
 
-    rewritten_query = response.content.strip()
+    response =
+        llm.invoke(
+            prompt
+        )
+
+
+    rewritten =
+        _content(
+            response
+        )
+
+
+    if not rewritten:
+        rewritten = question
+
 
     return {
-        "rewritten_query": rewritten_query
+        "rewritten_query":
+            rewritten
     }
 
 
 # ======================================================
-# MULTI-QUERY NODE
+# RETRIEVE DOCUMENTS
 # ======================================================
 
-def multi_query_node(state):
+def retrieve_documents_node(
+    state
+):
 
-    question = state["question"]
-
-    history = state.get(
-        "history",
-        []
-    )
-
-    retry_count = state.get(
-        "retry_count",
-        0
-    )
-
-    # --------------------------------------------------
-    # Generate multiple search queries
-    # --------------------------------------------------
-
-    queries = generate_search_queries(
-
-        question=question,
-
-        history=history
-    )
-
-    # --------------------------------------------------
-    # Fallback
-    # --------------------------------------------------
-
-    if not queries:
-
-        queries = [
-            state.get(
-                "rewritten_query",
-                question
-            )
+    query =
+        state.get(
+            "rewritten_query"
+        ) or state[
+            "question"
         ]
 
-    # --------------------------------------------------
-    # During retry, make sure we don't lose
-    # the current rewritten query
-    # --------------------------------------------------
-
-    rewritten_query = queries[0]
-
-    return {
-
-        "search_queries": queries,
-
-        "rewritten_query": rewritten_query,
-
-        "retry_count": retry_count
-    }
-
-
-# ======================================================
-# RETRIEVE + RERANK NODE
-# ======================================================
-
-def retrieve_documents_node(state):
-
-    search_queries = state.get(
-        "search_queries",
-        []
-    )
-
-    # --------------------------------------------------
-    # Fallback to rewritten query
-    # --------------------------------------------------
-
-    if not search_queries:
-
-        search_queries = [
-            state.get(
-                "rewritten_query",
-                state["question"]
-            )
+    user_id =
+        state[
+            "user_id"
         ]
 
-    user_id = state["user_id"]
 
-    all_results = []
-
-    seen_ids = set()
-
-    # ==================================================
-    # RETRIEVE FOR EACH QUERY
-    # ==================================================
-
-    for query in search_queries:
-
-        results = retrieve_documents(
+    results =
+        retrieve_documents(
 
             query=query,
 
             user_id=user_id,
 
-            limit=5
+            limit=8,
         )
 
-        for result in results:
 
-            point_id = str(
-                result.id
-            )
-
-            # --------------------------------------------------
-            # Remove duplicate Qdrant points
-            # --------------------------------------------------
-
-            if point_id in seen_ids:
-                continue
-
-            seen_ids.add(
-                point_id
-            )
-
-            all_results.append(
-                result
-            )
-
-    # ==================================================
-    # NO RESULTS
-    # ==================================================
-
-    if not all_results:
+    if not results:
 
         return {
 
@@ -247,53 +286,52 @@ def retrieve_documents_node(state):
 
             "sources": [],
 
-            "reranker_scores": []
+            "reranker_scores": [],
+
+            "retrieval_attempted":
+                True,
         }
 
-    # ==================================================
-    # RERANK
-    # ==================================================
 
-    reranked_results = rerank_documents(
+    reranked =
+        rerank_documents(
 
-        query=state.get(
-            "rewritten_query",
-            state["question"]
-        ),
+            query=query,
 
-        results=all_results,
+            results=results,
 
-        top_k=3
-    )
+            top_k=3,
+        )
 
-    # ==================================================
-    # BUILD CONTEXT
-    # ==================================================
 
     context_parts = []
 
     sources = []
 
-    reranker_scores = []
+    scores = []
 
-    seen_sources = set()
 
-    for item in reranked_results:
+    for item in reranked:
 
-        result = item["result"]
+        result =
+            item["result"]
 
-        score = item["score"]
+        score =
+            float(
+                item["score"]
+            )
 
-        payload = result.payload
+        payload =
+            result.payload or {}
 
-        text = payload.get(
-            "text",
-            ""
-        )
 
-        # --------------------------------------------------
-        # Add text
-        # --------------------------------------------------
+        text = str(
+            payload.get(
+                "text",
+                ""
+            )
+        ).strip()
+
 
         if text:
 
@@ -301,355 +339,379 @@ def retrieve_documents_node(state):
                 text
             )
 
-        # --------------------------------------------------
-        # Source
-        # --------------------------------------------------
 
-        filename = payload.get(
-            "filename"
+        sources.append(
+            {
+                "filename":
+                    payload.get(
+                        "filename"
+                    ),
+
+                "page":
+                    payload.get(
+                        "page"
+                    ),
+
+                "document_id":
+                    payload.get(
+                        "document_id"
+                    ),
+            }
         )
 
-        page = payload.get(
-            "page"
+
+        scores.append(
+            score
         )
 
-        document_id = payload.get(
-            "document_id"
-        )
-
-        source_key = (
-            str(document_id),
-            str(page),
-            str(filename)
-        )
-
-        if source_key not in seen_sources:
-
-            seen_sources.add(
-                source_key
-            )
-
-            sources.append({
-
-                "filename": filename,
-
-                "page": page,
-
-                "document_id": document_id
-            })
-
-        # --------------------------------------------------
-        # Reranker score
-        # --------------------------------------------------
-
-        reranker_scores.append(
-            float(score)
-        )
-
-    context = "\n\n".join(
-        context_parts
-    )
 
     return {
 
-        "context": context,
+        "context":
+            "\n\n".join(
+                context_parts
+            ),
 
-        "sources": sources,
+        "sources":
+            sources,
 
         "reranker_scores":
-            reranker_scores
+            scores,
+
+        "retrieval_attempted":
+            True,
     }
 
 
 # ======================================================
-# EVALUATE RETRIEVAL NODE
+# EVALUATE RETRIEVAL
 # ======================================================
 
-def evaluate_retrieval_node(state):
+def evaluate_retrieval_node(
+    state
+):
 
-    context = state.get(
-        "context",
-        ""
-    )
+    context =
+        state.get(
+            "context",
+            ""
+        )
 
-    # --------------------------------------------------
-    # No context
-    # --------------------------------------------------
 
     if not context:
 
         return {
-            "retrieval_relevant": False
+            "retrieval_relevant":
+                False
         }
 
-    # --------------------------------------------------
-    # Evaluate retrieved context
-    # --------------------------------------------------
 
-    is_relevant = evaluate_retrieval(
+    relevant =
+        evaluate_retrieval(
 
-        question=state["question"],
+            question=
+                state["question"],
 
-        context=context
-    )
+            context=
+                context,
+        )
+
 
     return {
-        "retrieval_relevant": is_relevant
+        "retrieval_relevant":
+            bool(relevant)
     }
 
 
 # ======================================================
-# GENERATE ANSWER NODE
+# RAG QA
 # ======================================================
 
-def generate_answer_node(state):
+def generate_answer_node(
+    state
+):
 
-    question = state["question"]
+    question =
+        state[
+            "question"
+        ]
 
-    context = state.get(
-        "context",
-        ""
-    )
-
-    history = state.get(
-        "history",
-        []
-    )
-
-    history_text = ""
-
-    for message in history[-6:]:
-
-        history_text += (
-            f'{message.get("role", "")}: '
-            f'{message.get("content", "")}\n'
+    context =
+        state.get(
+            "context",
+            ""
         )
 
-    # --------------------------------------------------
-    # Prompt
-    # --------------------------------------------------
+    history =
+        state.get(
+            "history",
+            []
+        )
+
+
+    if not context:
+
+        return {
+
+            "answer":
+                "I could not find enough relevant information in your uploaded documents to answer that question.",
+
+            "sources":
+                [],
+
+        }
+
+
+    history_text =
+        _history_text(
+            history
+        )
+
 
     prompt = f"""
 You are an AI Study Assistant.
 
-Answer the user's question using ONLY
-the provided document context.
+Answer the user's document-related question
+using the provided document context.
 
 Conversation History:
-
 {history_text}
 
 Document Context:
-
 {context}
 
 Current User Question:
-
 {question}
 
 Rules:
 
-- Use the document context as the source of truth.
-- Do not invent information.
-- Do not use outside knowledge.
-- Conversation history is only used to understand
-  references and context.
-- If the answer is not present in the documents,
-  say you could not find the information.
-- Give a clear and concise answer.
+- Use document context as the source of truth.
+- Do not invent facts about the document.
+- Conversation history may resolve references.
+- Do not claim information is in the document if it isn't.
+- Be clear and concise.
 
 Answer:
 """
 
-    response = llm.invoke(
-        prompt
-    )
+
+    response =
+        llm.invoke(
+            prompt
+        )
+
 
     return {
-        "answer": response.content
+
+        "answer":
+            _content(
+                response
+            )
     }
 
 
 # ======================================================
-# RETRY NODE
+# GENERAL AI
 # ======================================================
 
-def retry_node(state):
+def general_answer_node(
+    state
+):
 
-    retry_count = state.get(
-        "retry_count",
-        0
-    )
+    question =
+        state[
+            "question"
+        ]
 
-    return {
-        "retry_count": retry_count + 1
-    }
-
-
-# ======================================================
-# REJECT NODE
-# ======================================================
-
-def reject_node(state):
-
-    return {
-
-        "answer": (
-            "I could not find that information "
-            "in the uploaded documents."
-        ),
-
-        "sources": []
-    }
+    history =
+        state.get(
+            "history",
+            []
+        )
 
 
-# ======================================================
-# SUMMARY NODE
-# ======================================================
+    history_text =
+        _history_text(
+            history
+        )
 
-def summary_node(state):
-
-    context = state.get(
-        "context",
-        ""
-    )
-
-    # --------------------------------------------------
-    # No context
-    # --------------------------------------------------
-
-    if not context:
-
-        return {
-
-            "answer": (
-                "I could not find enough information "
-                "in the uploaded documents "
-                "to create a summary."
-            ),
-
-            "sources": []
-        }
-
-    # --------------------------------------------------
-    # Summary prompt
-    # --------------------------------------------------
 
     prompt = f"""
-You are an AI Study Assistant.
+You are a general-purpose AI Study Assistant.
 
-Create a concise summary using ONLY
-the provided document context.
+Answer the user's question directly.
 
-Rules:
+You can answer:
 
-- Use only the provided context.
-- Do not invent information.
-- Do not use outside knowledge.
-- Organize the summary clearly.
-- Keep important facts, technologies, dates,
-  roles, and achievements when available.
+- general knowledge
+- technical concepts
+- AI/ML
+- databases
+- networking
+- cloud
+- interview questions
+- system design
+- software engineering
+- career questions
+- explanations
+- mathematics
+- science
+- other reasonable questions
 
-Document Context:
+Conversation history is available so you can
+understand references such as:
 
-{context}
+- it
+- this
+- that
+- the previous answer
+- the above
+- that algorithm
 
-User Request:
+Do not claim that information came from the
+user's documents unless document context was
+actually provided.
 
-{state["question"]}
+If the user asks a technical explanation,
+make the explanation structured and practical.
 
-Summary:
+If the user asks a system-design question,
+include architecture and trade-offs.
+
+Conversation History:
+{history_text}
+
+Current User Question:
+{question}
+
+Answer:
 """
 
-    response = llm.invoke(
-        prompt
-    )
+
+    response =
+        llm.invoke(
+            prompt
+        )
+
 
     return {
-        "answer": response.content
+
+        "answer":
+            _content(
+                response
+            ),
+
+        "sources":
+            [],
+
+        "retrieval_relevant":
+            None,
+
+        "rewritten_query":
+            None,
     }
 
 
 # ======================================================
-# QUIZ NODE
+# CODING / DSA
 # ======================================================
 
-def quiz_node(state):
+def coding_answer_node(
+    state
+):
 
-    context = state.get(
-        "context",
-        ""
-    )
+    question =
+        state[
+            "question"
+        ]
 
-    # --------------------------------------------------
-    # No context
-    # --------------------------------------------------
+    history =
+        state.get(
+            "history",
+            []
+        )
 
-    if not context:
 
-        return {
+    history_text =
+        _history_text(
+            history
+        )
 
-            "answer": (
-                "I could not find enough information "
-                "in the uploaded documents "
-                "to generate a quiz."
-            ),
-
-            "sources": []
-        }
-
-    # --------------------------------------------------
-    # Quiz prompt
-    # --------------------------------------------------
 
     prompt = f"""
-You are an AI Study Assistant.
+You are an expert software engineer,
+DSA instructor, competitive programmer,
+debugging expert, and system-design mentor.
 
-Generate a quiz using ONLY the
-provided document context.
+Solve the user's coding or technical implementation
+request completely.
 
-User Request:
+IMPORTANT:
 
-{state["question"]}
+When the user asks for an algorithm or DSA problem,
+use this structure:
 
-Document Context:
+## Problem Understanding
 
-{context}
+Explain the problem.
 
-Rules:
+## Approach
 
-- Use ONLY the document context.
-- Do not use outside knowledge.
-- Do not invent facts.
-- Create clear multiple-choice questions.
-- Each question must have exactly 4 options.
-- Provide exactly one correct answer.
-- Include the correct answer after each question.
-- Keep questions directly related to the uploaded documents.
+Explain the optimized approach.
 
-Format:
+## Algorithm
 
-Question 1:
-<question>
+Give numbered steps.
 
-A. <option>
-B. <option>
-C. <option>
-D. <option>
+## Code
 
-Correct Answer:
-<option letter and answer>
+Provide COMPLETE runnable code.
 
-Question 2:
+## Example
+
+Input:
 ...
 
-Quiz:
-"""
+Output:
+...
 
-    response = llm.invoke(
-        prompt
-    )
+## Complexity
 
-    return {
-        "answer": response.content
-    }
+Time Complexity:
+O(...)
+
+Space Complexity:
+O(...)
+
+## Edge Cases
+
+Explain important edge cases.
+
+## Why It Works
+
+Explain correctness and reasoning.
+
+For debugging requests:
+
+## Problem
+
+## Root Cause
+
+## Fixed Code
+
+Provide the COMPLETE corrected code.
+
+## Explanation
+
+Explain the fix.
+
+For project implementation requests:
+
+Start with:
+
+## File Structure
+
+```text
+project/
+├── ...
+└── ...
