@@ -1,7 +1,3 @@
-# ======================================================
-# INTENT CLASSIFIER
-# ======================================================
-
 import re
 
 
@@ -14,29 +10,16 @@ VALID_INTENTS = {
 }
 
 
-# ======================================================
-# NORMALIZE
-# ======================================================
-
 def _normalize(text: str) -> str:
-
     return " ".join(
-        (text or "")
-        .strip()
-        .lower()
-        .split()
+        (text or "").strip().lower().split()
     )
 
-
-# ======================================================
-# DOCUMENT DETECTION
-# ======================================================
 
 def _document_reference(
     question: str,
     history: list[dict] | None = None,
 ) -> bool:
-
     text = _normalize(question)
 
     explicit_patterns = [
@@ -68,35 +51,23 @@ def _document_reference(
         r"\bmy certifications\b",
     ]
 
-    for pattern in explicit_patterns:
-
-        if re.search(
-            pattern,
-            text,
-            re.IGNORECASE
-        ):
-            return True
-
-
-    # --------------------------------------------------
-    # Follow-up detection using conversation history
-    # --------------------------------------------------
+    if any(
+        re.search(pattern, text, re.IGNORECASE)
+        for pattern in explicit_patterns
+    ):
+        return True
 
     if history:
-
-        recent = " ".join(
-            str(
-                message.get(
-                    "content",
-                    ""
-                )
-            )
-            for message
-            in history[-6:]
-        )
-
         recent = _normalize(
-            recent
+            " ".join(
+                str(
+                    message.get(
+                        "content",
+                        "",
+                    )
+                )
+                for message in history[-6:]
+            )
         )
 
         document_words = [
@@ -113,21 +84,18 @@ def _document_reference(
             "skills",
         ]
 
-        follow_up_words = [
+        follow_up_phrases = [
             "which one",
             "who issued it",
-            "when did i",
-            "where is it",
             "what was the other",
             "that one",
             "this one",
-            "it",
-            "they",
-            "them",
-            "those",
             "previous",
             "above",
             "earlier",
+            "it",
+            "they",
+            "them",
         ]
 
         has_document_history = any(
@@ -136,8 +104,8 @@ def _document_reference(
         )
 
         has_follow_up = any(
-            word in text
-            for word in follow_up_words
+            phrase in text
+            for phrase in follow_up_phrases
         )
 
         if (
@@ -146,23 +114,13 @@ def _document_reference(
         ):
             return True
 
-
     return False
 
 
-# ======================================================
-# CODING DETECTION
-# ======================================================
-
-def _coding_request(
-    question: str
-) -> bool:
-
+def _coding_request(question: str) -> bool:
     text = _normalize(question)
 
     patterns = [
-
-        # Code generation
         r"\bwrite code\b",
         r"\bprovide code\b",
         r"\bgive me code\b",
@@ -170,8 +128,6 @@ def _coding_request(
         r"\bcode for\b",
         r"\bimplement\b",
         r"\bimplementation\b",
-
-        # Coding tasks
         r"\bsolve\b",
         r"\bsolution\b",
         r"\bprogramming\b",
@@ -181,8 +137,6 @@ def _coding_request(
         r"\bfix my code\b",
         r"\boptimize my code\b",
         r"\brefactor\b",
-
-        # DSA
         r"\bdsa\b",
         r"\bdata structure\b",
         r"\bdata structures\b",
@@ -194,7 +148,6 @@ def _coding_request(
         r"\bbinary search\b",
         r"\bdfs\b",
         r"\bbfs\b",
-        r"\bgraph algorithm\b",
         r"\blinked list\b",
         r"\bstack\b",
         r"\bqueue\b",
@@ -212,13 +165,9 @@ def _coding_request(
         r"\bdijkstra\b",
         r"\bunion find\b",
         r"\bdisjoint set\b",
-
-        # Complexity
         r"\btime complexity\b",
         r"\bspace complexity\b",
         r"\bbig o\b",
-
-        # Programming languages / frameworks
         r"\bpython\b",
         r"\bjava\b",
         r"\bc\+\+\b",
@@ -231,10 +180,6 @@ def _coding_request(
         r"\bfastapi\b",
         r"\bspring boot\b",
         r"\bsql\b",
-
-        # Technical implementation
-        r"\bapi\b",
-        r"\brest api\b",
         r"\bjwt\b",
         r"\bmongodb\b",
         r"\bpostgresql\b",
@@ -246,21 +191,13 @@ def _coding_request(
         re.search(
             pattern,
             text,
-            re.IGNORECASE
+            re.IGNORECASE,
         )
-        for pattern
-        in patterns
+        for pattern in patterns
     )
 
 
-# ======================================================
-# QUIZ
-# ======================================================
-
-def _quiz_request(
-    question: str
-) -> bool:
-
+def _quiz_request(question: str) -> bool:
     text = _normalize(question)
 
     patterns = [
@@ -277,21 +214,13 @@ def _quiz_request(
         re.search(
             pattern,
             text,
-            re.IGNORECASE
+            re.IGNORECASE,
         )
-        for pattern
-        in patterns
+        for pattern in patterns
     )
 
 
-# ======================================================
-# SUMMARY
-# ======================================================
-
-def _summary_request(
-    question: str
-) -> bool:
-
+def _summary_request(question: str) -> bool:
     text = _normalize(question)
 
     patterns = [
@@ -304,86 +233,40 @@ def _summary_request(
         re.search(
             pattern,
             text,
-            re.IGNORECASE
+            re.IGNORECASE,
         )
-        for pattern
-        in patterns
+        for pattern in patterns
     )
 
-
-# ======================================================
-# PUBLIC CLASSIFIER
-# ======================================================
 
 def classify_intent(
     question: str,
     history: list[dict] | None = None,
 ) -> str:
-
     if not question or not question.strip():
-
         return "GENERAL"
 
+    document_reference = _document_reference(
+        question,
+        history,
+    )
 
-    document_reference =
-        _document_reference(
-            question,
-            history
-        )
-
-    coding_request =
-        _coding_request(
-            question
-        )
-
-
-    # --------------------------------------------------
-    # Explicit coding wins when user asks for code.
-    #
-    # Example:
-    # "Write Java code based on my resume"
-    # --------------------------------------------------
-
-    if coding_request:
-
+    if _coding_request(question):
         return "CODING"
-
-
-    # --------------------------------------------------
-    # Quiz from document
-    # --------------------------------------------------
 
     if (
         document_reference
         and _quiz_request(question)
     ):
-
         return "QUIZ"
-
-
-    # --------------------------------------------------
-    # Summary from document
-    # --------------------------------------------------
 
     if (
         document_reference
         and _summary_request(question)
     ):
-
         return "SUMMARY"
 
-
-    # --------------------------------------------------
-    # Document QA
-    # --------------------------------------------------
-
     if document_reference:
-
         return "QA"
-
-
-    # --------------------------------------------------
-    # Everything else
-    # --------------------------------------------------
 
     return "GENERAL"
