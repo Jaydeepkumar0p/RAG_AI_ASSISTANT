@@ -1,777 +1,592 @@
-"""
-Intent classification for the AI Study Assistant.
-
-Supported intents:
-
-    QA
-    SUMMARY
-    QUIZ
-    CODING
-    GENERAL
-
-Design goals:
-
-1. Fast:
-   Obvious questions are classified without an LLM call.
-
-2. Document-aware:
-   Questions about "me", "my resume", certificates, skills,
-   projects, experience, etc. are routed to document retrieval.
-
-3. Conversation-aware:
-   Follow-up questions such as "which one?" or "who issued it?"
-   can inherit the previous document context.
-
-4. Conservative:
-   Coding questions are not allowed to incorrectly override
-   an obvious resume/document question.
-
-5. Deterministic:
-   The same input produces the same result.
-"""
-
-from __future__ import annotations
-
+import json
 import re
-from typing import Any
+from typing import Any, Dict
+
+from groq import Groq
+
+from src.core.config import settings
 
 
 # ============================================================
-# VALID INTENTS
+# GROQ CLIENT
 # ============================================================
 
-QA = "QA"
-SUMMARY = "SUMMARY"
-QUIZ = "QUIZ"
-CODING = "CODING"
-GENERAL = "GENERAL"
+client = Groq(
+    api_key=settings.GROQ_API_KEY
+)
 
 
-VALID_INTENTS = {
-    QA,
-    SUMMARY,
-    QUIZ,
-    CODING,
-    GENERAL,
+# ============================================================
+# INTENT CLASSIFICATION PROMPT
+# ============================================================
+
+INTENT_PROMPT = """
+You are an advanced intent classifier for a document-grounded
+AI RAG assistant.
+
+The user has uploaded documents such as resumes, PDFs, reports,
+notes, certificates, project documents, etc.
+
+Your job is to determine what the user wants and whether the
+answer should be retrieved from their uploaded documents.
+
+IMPORTANT RULE:
+
+Do NOT require the user to explicitly mention:
+- resume
+- document
+- PDF
+- uploaded file
+
+before deciding that retrieval is required.
+
+Questions such as:
+
+"list my skills"
+"what technologies do I know?"
+"what projects have I worked on?"
+"tell me about my experience"
+"what certifications do I have?"
+
+are document queries even when the user does not mention a document.
+
+============================================================
+AVAILABLE INTENTS
+============================================================
+
+DOCUMENT_QUERY
+DOCUMENT_SUMMARY
+DOCUMENT_COMPARISON
+DOCUMENT_ANALYSIS
+CONVERSATION_QUERY
+CLARIFICATION
+OUT_OF_SCOPE
+
+============================================================
+QUERY TYPES
+============================================================
+
+GENERAL
+SKILLS
+TECHNOLOGIES
+PROGRAMMING_LANGUAGES
+FRAMEWORKS
+LIBRARIES
+TOOLS
+DATABASES
+CLOUD
+AI_ML
+EXPERIENCE
+INTERNSHIPS
+EDUCATION
+PROJECTS
+CERTIFICATIONS
+ACHIEVEMENTS
+RESPONSIBILITIES
+WORK_HISTORY
+CONTACT_INFORMATION
+LOCATION
+TIMELINE
+STATISTICS
+SUMMARY
+DETAILED_SUMMARY
+COMPARISON
+OTHER_DOCUMENT_INFORMATION
+
+============================================================
+ANSWER MODES
+============================================================
+
+SHORT_ANSWER
+DETAILED_ANSWER
+STRUCTURED_LIST
+TABLE
+TIMELINE
+SUMMARY
+DETAILED_SUMMARY
+COMPARISON
+
+============================================================
+RULES
+============================================================
+
+1. If the question can reasonably be answered using information
+   contained in the user's uploaded documents, use:
+
+   DOCUMENT_QUERY
+
+   or another appropriate document intent.
+
+2. Never require words such as "resume", "document", or "PDF".
+
+3. "list my skills" must be:
+
+   DOCUMENT_QUERY
+   SKILLS
+   requires_retrieval=true
+
+4. "what technologies do I know?" must be:
+
+   DOCUMENT_QUERY
+   TECHNOLOGIES
+   requires_retrieval=true
+
+5. "what projects have I worked on?" must be:
+
+   DOCUMENT_QUERY
+   PROJECTS
+   requires_retrieval=true
+
+6. "what certifications do I have?" must be:
+
+   DOCUMENT_QUERY
+   CERTIFICATIONS
+   requires_retrieval=true
+
+7. "tell me about my experience" must be:
+
+   DOCUMENT_QUERY
+   EXPERIENCE
+   requires_retrieval=true
+
+8. "summarize my resume" must be:
+
+   DOCUMENT_SUMMARY
+   SUMMARY
+   requires_retrieval=true
+
+9. "give me everything about my resume" must be:
+
+   DOCUMENT_SUMMARY
+   DETAILED_SUMMARY
+   requires_retrieval=true
+   requires_multiple_chunks=true
+
+10. "compare my projects" must be:
+
+    DOCUMENT_COMPARISON
+    COMPARISON
+    requires_retrieval=true
+
+11. Questions asking for information from multiple parts of a
+    document should set:
+
+    requires_multiple_chunks=true
+
+12. Questions requiring a list of information should normally use:
+
+    STRUCTURED_LIST
+
+13. Questions asking for a complete document summary should use:
+
+    DETAILED_SUMMARY
+
+14. Only use OUT_OF_SCOPE when the question genuinely cannot
+    reasonably be answered from the uploaded documents and is
+    not a conversation-related question.
+
+15. Never reject a question merely because the user used a short
+    or informal sentence.
+
+16. Preserve the user's actual intent.
+
+============================================================
+QUERY REWRITING
+============================================================
+
+The rewritten query must be optimized for semantic retrieval.
+
+Do NOT simply repeat the user's question.
+
+Examples:
+
+User:
+"list my skills"
+
+Rewritten:
+"Extract all technical and professional skills explicitly
+mentioned in the user's uploaded documents, including programming
+languages, frameworks, libraries, databases, tools, cloud
+technologies, AI/ML technologies and other relevant skills."
+
+User:
+"what technologies do I know?"
+
+Rewritten:
+"Extract all technologies, programming languages, frameworks,
+libraries, databases, cloud platforms and AI technologies explicitly
+mentioned in the user's documents."
+
+User:
+"what projects have I worked on?"
+
+Rewritten:
+"Extract all projects mentioned in the user's documents,
+including project names, descriptions, technologies and
+responsibilities."
+
+User:
+"what certifications do I have?"
+
+Rewritten:
+"Extract all certifications explicitly mentioned in the user's
+documents."
+
+User:
+"tell me about my experience"
+
+Rewritten:
+"Extract the user's professional experience, internships,
+companies, roles, responsibilities and relevant work history
+mentioned in the documents."
+
+============================================================
+OUTPUT
+============================================================
+
+Return ONLY valid JSON.
+
+Use exactly this structure:
+
+{
+    "intent": "...",
+    "query_type": "...",
+    "requires_retrieval": true,
+    "requires_multiple_chunks": false,
+    "answer_mode": "...",
+    "rewritten_query": "..."
 }
+"""
 
 
 # ============================================================
-# NORMALIZATION
+# FALLBACK CLASSIFIER
 # ============================================================
 
-def _normalize(
-    text: str | None,
-) -> str:
-    """
-    Normalize user text for reliable matching.
-    """
+def fallback_intent(question: str) -> Dict[str, Any]:
 
-    return " ".join(
-        str(
-            text or ""
-        )
-        .strip()
-        .lower()
-        .split()
-    )
+    q = question.lower().strip()
 
-
-# ============================================================
-# HISTORY HELPERS
-# ============================================================
-
-def _history_text(
-    history: list[dict[str, Any]] | None,
-) -> str:
-    """
-    Convert recent conversation history to searchable text.
-    """
-
-    if not history:
-        return ""
-
-    recent_messages = history[-8:]
-
-    parts: list[str] = []
-
-    for message in recent_messages:
-
-        if not isinstance(
-            message,
-            dict,
-        ):
-            continue
-
-        content = message.get(
-            "content",
-            "",
-        )
-
-        if content:
-            parts.append(
-                str(content)
-            )
-
-    return _normalize(
-        " ".join(parts)
-    )
-
-
-# ============================================================
-# REGEX HELPER
-# ============================================================
-
-def _contains_pattern(
-    text: str,
-    patterns: list[str],
-) -> bool:
-    """
-    Return True if any regex pattern matches.
-    """
-
-    for pattern in patterns:
-
-        if re.search(
-            pattern,
-            text,
-            re.IGNORECASE,
-        ):
-            return True
-
-    return False
-
-
-# ============================================================
-# EXPLICIT DOCUMENT SIGNALS
-# ============================================================
-
-DOCUMENT_PATTERNS = [
-
-    # Resume / CV
-    r"\bresume\b",
-    r"\bmy resume\b",
-    r"\bthe resume\b",
-    r"\bcv\b",
-    r"\bmy cv\b",
-    r"\bthe cv\b",
-
-    # Documents / PDF
-    r"\bmy document\b",
-    r"\bmy documents\b",
-    r"\bthe document\b",
-    r"\bmy pdf\b",
-    r"\bthe pdf\b",
-    r"\buploaded document\b",
-    r"\buploaded documents\b",
-    r"\buploaded pdf\b",
-    r"\buploaded file\b",
-
-    # Explicit document relation
-    r"\bin my resume\b",
-    r"\bin my cv\b",
-    r"\bfrom my resume\b",
-    r"\bfrom my cv\b",
-    r"\baccording to my resume\b",
-    r"\baccording to my cv\b",
-    r"\bmentioned in my resume\b",
-    r"\bmentioned in my cv\b",
-    r"\blisted in my resume\b",
-    r"\blisted in my cv\b",
-    r"\bshown in my resume\b",
-    r"\bshown in my cv\b",
-]
-
-
-# ============================================================
-# PERSONAL PROFILE / RESUME SIGNALS
-# ============================================================
-
-PERSONAL_PROFILE_PATTERNS = [
-
-    # About me
-    r"\btell me about me\b",
-    r"\btell me about myself\b",
-    r"\bwhat do you know about me\b",
-    r"\bwhat can you tell me about me\b",
-    r"\bwho am i\b",
-    r"\bdescribe me\b",
-    r"\bdescribe myself\b",
-
-    # Profile / background
-    r"\bmy profile\b",
-    r"\bmy background\b",
-    r"\bmy professional profile\b",
-    r"\bmy professional background\b",
-    r"\bmy career\b",
-    r"\bmy career profile\b",
-
+    # --------------------------------------------------------
     # Skills
-    r"\bmy skills\b",
-    r"\bwhat are my skills\b",
-    r"\bwhat skills do i have\b",
-    r"\blist my skills\b",
-    r"\bshow my skills\b",
+    # --------------------------------------------------------
 
+    if any(word in q for word in [
+        "skill",
+        "skills",
+        "abilities",
+        "technical skills"
+    ]):
+
+        return {
+            "intent": "DOCUMENT_QUERY",
+            "query_type": "SKILLS",
+            "requires_retrieval": True,
+            "requires_multiple_chunks": True,
+            "answer_mode": "STRUCTURED_LIST",
+            "rewritten_query": (
+                "Extract all technical and professional skills "
+                "explicitly mentioned in the user's uploaded "
+                "documents, including programming languages, "
+                "frameworks, libraries, databases, tools, cloud "
+                "technologies and AI/ML technologies."
+            )
+        }
+
+    # --------------------------------------------------------
     # Technologies
-    r"\bmy technologies\b",
-    r"\bmy tech stack\b",
-    r"\bwhat technologies do i know\b",
-    r"\bwhat technologies do i have\b",
-    r"\blist my technologies\b",
+    # --------------------------------------------------------
 
+    if any(word in q for word in [
+        "technology",
+        "technologies",
+        "tech stack",
+        "tech"
+    ]):
+
+        return {
+            "intent": "DOCUMENT_QUERY",
+            "query_type": "TECHNOLOGIES",
+            "requires_retrieval": True,
+            "requires_multiple_chunks": True,
+            "answer_mode": "STRUCTURED_LIST",
+            "rewritten_query": (
+                "Extract all technologies, programming languages, "
+                "frameworks, libraries, databases, cloud platforms "
+                "and AI technologies mentioned in the user's "
+                "documents."
+            )
+        }
+
+    # --------------------------------------------------------
     # Projects
-    r"\bmy projects\b",
-    r"\bwhat projects do i have\b",
-    r"\blist my projects\b",
-    r"\bshow my projects\b",
+    # --------------------------------------------------------
 
-    # Experience
-    r"\bmy experience\b",
-    r"\bmy work experience\b",
-    r"\bmy professional experience\b",
-    r"\bwhat experience do i have\b",
-    r"\blist my experience\b",
+    if any(word in q for word in [
+        "project",
+        "projects",
+        "built",
+        "build"
+    ]):
 
+        return {
+            "intent": "DOCUMENT_QUERY",
+            "query_type": "PROJECTS",
+            "requires_retrieval": True,
+            "requires_multiple_chunks": True,
+            "answer_mode": "STRUCTURED_LIST",
+            "rewritten_query": (
+                "Extract all projects mentioned in the user's "
+                "documents, including project names, descriptions, "
+                "technologies and responsibilities."
+            )
+        }
+
+    # --------------------------------------------------------
+    # Certifications
+    # --------------------------------------------------------
+
+    if any(word in q for word in [
+        "certification",
+        "certifications",
+        "certificate",
+        "certificates"
+    ]):
+
+        return {
+            "intent": "DOCUMENT_QUERY",
+            "query_type": "CERTIFICATIONS",
+            "requires_retrieval": True,
+            "requires_multiple_chunks": True,
+            "answer_mode": "STRUCTURED_LIST",
+            "rewritten_query": (
+                "Extract all certifications and certificates "
+                "explicitly mentioned in the user's documents."
+            )
+        }
+
+    # --------------------------------------------------------
     # Education
-    r"\bmy education\b",
-    r"\bwhat education do i have\b",
-    r"\bmy degree\b",
-    r"\bmy university\b",
-    r"\bmy qualification\b",
-    r"\bmy qualifications\b",
-
-    # Internships
-    r"\bmy internship\b",
-    r"\bmy internships\b",
-
-    # Achievements
-    r"\bmy achievement\b",
-    r"\bmy achievements\b",
-    r"\bwhat achievements do i have\b",
-
-    # Certificates
-    r"\bmy certificate\b",
-    r"\bmy certificates\b",
-    r"\bmy certification\b",
-    r"\bmy certifications\b",
-    r"\bwhat certificates do i have\b",
-    r"\bwhat certifications do i have\b",
-    r"\blist my certificates\b",
-    r"\blist my certifications\b",
-    r"\bshow my certificates\b",
-    r"\bshow my certifications\b",
-]
-
-
-# ============================================================
-# CERTIFICATE PATTERNS
-# ============================================================
-
-CERTIFICATE_PATTERNS = [
-
-    r"\bcertificate\b",
-    r"\bcertificates\b",
-    r"\bcertification\b",
-    r"\bcertifications\b",
-    r"\bcredential\b",
-    r"\bcredentials\b",
-]
-
-
-CERTIFICATE_ACTION_PATTERNS = [
-
-    r"\blist\b",
-    r"\bshow\b",
-    r"\btell me\b",
-    r"\bwhat\b",
-    r"\bwhich\b",
-    r"\bhave\b",
-    r"\bearned\b",
-    r"\bcompleted\b",
-    r"\bmentioned\b",
-    r"\blisted\b",
-    r"\bissued\b",
-    r"\bissuer\b",
-]
-
-
-# ============================================================
-# SUMMARY PATTERNS
-# ============================================================
-
-SUMMARY_PATTERNS = [
-
-    r"\bsummarize\b",
-    r"\bsummarise\b",
-    r"\bsummary\b",
-    r"\bgive me a summary\b",
-    r"\bmake a summary\b",
-    r"\bbrief summary\b",
-    r"\bshort summary\b",
-    r"\bprovide a summary\b",
-]
-
-
-# ============================================================
-# QUIZ PATTERNS
-# ============================================================
-
-QUIZ_PATTERNS = [
-
-    r"\bquiz\b",
-    r"\bmcq\b",
-    r"\bmcqs\b",
-    r"\bmultiple choice\b",
-    r"\bmultiple-choice\b",
-    r"\btest me\b",
-    r"\bcreate questions\b",
-    r"\bgenerate questions\b",
-    r"\bmake questions\b",
-]
-
-
-# ============================================================
-# CODING PATTERNS
-# ============================================================
-
-CODING_PATTERNS = [
-
-    # Generic coding
-    r"\bcoding\b",
-    r"\bprogramming\b",
-    r"\bwrite code\b",
-    r"\bprovide code\b",
-    r"\bgive me code\b",
-    r"\bshow me code\b",
-    r"\bcode for\b",
-    r"\bimplement\b",
-    r"\bimplementation\b",
-
-    # Debugging
-    r"\bdebug\b",
-    r"\bdebugging\b",
-    r"\bdebug this\b",
-    r"\bfix my code\b",
-    r"\bfix this code\b",
-    r"\bwhy does this code\b",
-    r"\bwhy is this code\b",
-    r"\berror in my code\b",
-    r"\boptimize this code\b",
-    r"\boptimize my code\b",
-    r"\brefactor\b",
-
-    # DSA
-    r"\bdsa\b",
-    r"\bdata structure\b",
-    r"\bdata structures\b",
-    r"\balgorithm\b",
-    r"\balgorithms\b",
-    r"\bleetcode\b",
-    r"\bhackerrank\b",
-    r"\bhackwithinfy\b",
-
-    # Common algorithms / patterns
-    r"\bbinary search\b",
-    r"\blinear search\b",
-    r"\bdynamic programming\b",
-    r"\bsliding window\b",
-    r"\btwo pointers\b",
-    r"\bbacktracking\b",
-    r"\brecursion\b",
-    r"\bdfs\b",
-    r"\bbfs\b",
-    r"\bdepth first search\b",
-    r"\bbreadth first search\b",
-    r"\btopological sort\b",
-    r"\bdijkstra\b",
-    r"\bshortest path\b",
-    r"\bminimum spanning tree\b",
-    r"\bunion find\b",
-    r"\bdisjoint set\b",
-
-    # Data structures
-    r"\blinked list\b",
-    r"\barray\b",
-    r"\bstack\b",
-    r"\bqueue\b",
-    r"\bdeque\b",
-    r"\bheap\b",
-    r"\bpriority queue\b",
-    r"\bhashmap\b",
-    r"\bhash map\b",
-    r"\bhash table\b",
-    r"\btree\b",
-    r"\bbinary tree\b",
-    r"\bbinary search tree\b",
-    r"\bgraph\b",
-    r"\btrie\b",
-
-    # Complexity
-    r"\btime complexity\b",
-    r"\bspace complexity\b",
-    r"\bbig o\b",
-    r"\bo\(\w+\)\b",
-
-    # Languages
-    r"\bpython code\b",
-    r"\bjava code\b",
-    r"\bc\+\+ code\b",
-    r"\bcpp code\b",
-    r"\bjavascript code\b",
-    r"\btypescript code\b",
-    r"\breact code\b",
-    r"\bnode\.?js code\b",
-    r"\bsql query\b",
-]
-
-
-# ============================================================
-# GENERAL AI SIGNALS
-# ============================================================
-
-GENERAL_PATTERNS = [
-
-    r"\bwhat is\b",
-    r"\bwhat are\b",
-    r"\bwhy is\b",
-    r"\bwhy are\b",
-    r"\bhow does\b",
-    r"\bhow do\b",
-    r"\bhow can\b",
-    r"\bexplain\b",
-    r"\bteach me\b",
-    r"\blearn\b",
-    r"\bhelp me learn\b",
-    r"\bcan you help me\b",
-    r"\bwhat does\b",
-    r"\bdefine\b",
-    r"\bdifference between\b",
-    r"\bcompare\b",
-]
-
-
-# ============================================================
-# DOCUMENT HISTORY TERMS
-# ============================================================
-
-DOCUMENT_HISTORY_TERMS = [
-
-    "resume",
-    "cv",
-    "document",
-    "pdf",
-    "uploaded",
-    "certificate",
-    "certificates",
-    "certification",
-    "certifications",
-    "skills",
-    "technologies",
-    "technology",
-    "projects",
-    "experience",
-    "education",
-    "internship",
-    "internships",
-    "achievement",
-    "achievements",
-    "profile",
-    "background",
-]
-
-
-# ============================================================
-# FOLLOW-UP PATTERNS
-# ============================================================
-
-FOLLOWUP_PATTERNS = [
-
-    # Pronoun/reference follow-ups
-    r"^it$",
-    r"^that$",
-    r"^this$",
-    r"^they$",
-    r"^them$",
-    r"^that one$",
-    r"^this one$",
-    r"^the other one$",
-
-    # Selection / continuation
-    r"^which one$",
-    r"^which one was",
-    r"^which was",
-    r"^what about it$",
-    r"^what about that$",
-
-    # Follow-up details
-    r"^who issued it$",
-    r"^who issued that$",
-    r"^when was it$",
-    r"^when was that$",
-    r"^when did it$",
-    r"^tell me more$",
-    r"^tell me more about it$",
-    r"^explain that$",
-    r"^explain it$",
-
-    # Context references
-    r"^the previous one$",
-    r"^the previous answer$",
-    r"^the above$",
-    r"^previous answer$",
-    r"^previous question$",
-]
-
-
-# ============================================================
-# DOCUMENT QUESTION DETECTION
-# ============================================================
-
-def _is_explicit_document_question(
-    text: str,
-) -> bool:
-    """
-    Detect questions that clearly refer to uploaded documents.
-    """
-
-    if _contains_pattern(
-        text,
-        DOCUMENT_PATTERNS,
-    ):
-        return True
-
-
-    if _contains_pattern(
-        text,
-        PERSONAL_PROFILE_PATTERNS,
-    ):
-        return True
-
-
-    # --------------------------------------------------------
-    # Certificate / certification
     # --------------------------------------------------------
 
-    has_certificate = _contains_pattern(
-        text,
-        CERTIFICATE_PATTERNS,
-    )
+    if any(word in q for word in [
+        "education",
+        "degree",
+        "college",
+        "university",
+        "cgpa",
+        "qualification"
+    ]):
 
-    has_certificate_action = _contains_pattern(
-        text,
-        CERTIFICATE_ACTION_PATTERNS,
-    )
-
-    if (
-        has_certificate
-        and has_certificate_action
-    ):
-        return True
-
-
-    return False
-
-
-# ============================================================
-# DOCUMENT FOLLOW-UP DETECTION
-# ============================================================
-
-def _is_document_followup(
-    text: str,
-    history: list[dict[str, Any]] | None,
-) -> bool:
-    """
-    Detect contextual follow-ups such as:
-
-        Q1: What certificates do I have?
-        Q2: Which one was completed in 2025?
-
-    The second question should remain in the document workflow.
-    """
-
-    if not history:
-        return False
-
-
-    history_text = _history_text(
-        history
-    )
-
-    if not history_text:
-        return False
-
-
-    has_document_context = any(
-        term in history_text
-        for term in DOCUMENT_HISTORY_TERMS
-    )
-
-    if not has_document_context:
-        return False
-
-
-    return _contains_pattern(
-        text,
-        FOLLOWUP_PATTERNS,
-    )
-
-
-# ============================================================
-# DIRECT SUMMARY DETECTION
-# ============================================================
-
-def _is_summary_question(
-    text: str,
-) -> bool:
-
-    return _contains_pattern(
-        text,
-        SUMMARY_PATTERNS,
-    )
-
-
-# ============================================================
-# DIRECT QUIZ DETECTION
-# ============================================================
-
-def _is_quiz_question(
-    text: str,
-) -> bool:
-
-    return _contains_pattern(
-        text,
-        QUIZ_PATTERNS,
-    )
-
-
-# ============================================================
-# DIRECT CODING DETECTION
-# ============================================================
-
-def _is_coding_question(
-    text: str,
-) -> bool:
-
-    return _contains_pattern(
-        text,
-        CODING_PATTERNS,
-    )
-
-
-# ============================================================
-# MAIN CLASSIFIER
-# ============================================================
-
-def classify_intent(
-    question: str,
-    history: list[dict[str, Any]] | None = None,
-) -> str:
-    """
-    Classify the user's request.
-
-    Priority:
-
-        1. Explicit document/profile request
-        2. Document follow-up
-        3. Document summary
-        4. Document quiz
-        5. Coding
-        6. General
-
-    Why document first?
-
-    Example:
-
-        "What programming languages are in my resume?"
-
-    contains "programming", but this is NOT a coding request.
-    It is a resume QA request.
-
-    Therefore document context has priority over coding.
-    """
-
-    text = _normalize(
-        question
-    )
-
+        return {
+            "intent": "DOCUMENT_QUERY",
+            "query_type": "EDUCATION",
+            "requires_retrieval": True,
+            "requires_multiple_chunks": True,
+            "answer_mode": "STRUCTURED_LIST",
+            "rewritten_query": (
+                "Extract the user's educational qualifications, "
+                "degrees, institutions, academic information and "
+                "other education details explicitly mentioned in "
+                "the documents."
+            )
+        }
 
     # --------------------------------------------------------
-    # EMPTY
+    # Experience
     # --------------------------------------------------------
 
-    if not text:
-        return GENERAL
+    if any(word in q for word in [
+        "experience",
+        "internship",
+        "internships",
+        "work experience",
+        "worked"
+    ]):
 
+        return {
+            "intent": "DOCUMENT_QUERY",
+            "query_type": "EXPERIENCE",
+            "requires_retrieval": True,
+            "requires_multiple_chunks": True,
+            "answer_mode": "DETAILED_ANSWER",
+            "rewritten_query": (
+                "Extract the user's professional experience, "
+                "internships, companies, roles, responsibilities "
+                "and work history from the documents."
+            )
+        }
 
     # --------------------------------------------------------
-    # EXPLICIT DOCUMENT QUESTION
+    # Summary
     # --------------------------------------------------------
 
-    document_question = (
-        _is_explicit_document_question(
-            text
+    if any(word in q for word in [
+        "summarize",
+        "summary",
+        "overview",
+        "summarise"
+    ]):
+
+        return {
+            "intent": "DOCUMENT_SUMMARY",
+            "query_type": "SUMMARY",
+            "requires_retrieval": True,
+            "requires_multiple_chunks": True,
+            "answer_mode": "DETAILED_SUMMARY",
+            "rewritten_query": (
+                "Create a comprehensive summary of the information "
+                "contained in the user's uploaded documents."
+            )
+        }
+
+    # --------------------------------------------------------
+    # Generic document query
+    # --------------------------------------------------------
+
+    return {
+        "intent": "DOCUMENT_QUERY",
+        "query_type": "GENERAL",
+        "requires_retrieval": True,
+        "requires_multiple_chunks": True,
+        "answer_mode": "DETAILED_ANSWER",
+        "rewritten_query": question
+    }
+
+
+# ============================================================
+# MAIN INTENT CLASSIFIER
+# ============================================================
+
+def classify_intent(question: str) -> Dict[str, Any]:
+
+    question = question.strip()
+
+    if not question:
+        return {
+            "intent": "CLARIFICATION",
+            "query_type": "GENERAL",
+            "requires_retrieval": False,
+            "requires_multiple_chunks": False,
+            "answer_mode": "SHORT_ANSWER",
+            "rewritten_query": ""
+        }
+
+    try:
+
+        response = client.chat.completions.create(
+
+            model="llama-3.3-70b-versatile",
+
+            messages=[
+                {
+                    "role": "system",
+                    "content": INTENT_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": question
+                }
+            ],
+
+            temperature=0,
+
+            max_tokens=500,
+
+            response_format={
+                "type": "json_object"
+            }
         )
-    )
 
+        content = response.choices[0].message.content
 
-    # --------------------------------------------------------
-    # CONTEXTUAL DOCUMENT FOLLOW-UP
-    # --------------------------------------------------------
+        result = json.loads(content)
 
-    if _is_document_followup(
-        text,
-        history,
-    ):
-        document_question = True
+        # ----------------------------------------------------
+        # Validate / normalize
+        # ----------------------------------------------------
 
+        allowed_intents = {
+            "DOCUMENT_QUERY",
+            "DOCUMENT_SUMMARY",
+            "DOCUMENT_COMPARISON",
+            "DOCUMENT_ANALYSIS",
+            "CONVERSATION_QUERY",
+            "CLARIFICATION",
+            "OUT_OF_SCOPE"
+        }
 
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
+        if result.get("intent") not in allowed_intents:
+            return fallback_intent(question)
 
-    if (
-        document_question
-        and _is_summary_question(
-            text
+        # ----------------------------------------------------
+        # Safety fallback:
+        # document-like questions should retrieve
+        # ----------------------------------------------------
+
+        if result.get("intent") == "OUT_OF_SCOPE":
+
+            document_keywords = [
+                "my",
+                "resume",
+                "document",
+                "pdf",
+                "skill",
+                "skills",
+                "experience",
+                "project",
+                "projects",
+                "technology",
+                "technologies",
+                "certification",
+                "education",
+                "internship",
+                "work"
+            ]
+
+            if any(
+                word in question.lower()
+                for word in document_keywords
+            ):
+
+                return fallback_intent(question)
+
+        # ----------------------------------------------------
+        # Normalize booleans
+        # ----------------------------------------------------
+
+        result["requires_retrieval"] = bool(
+            result.get(
+                "requires_retrieval",
+                True
+            )
         )
-    ):
-        return SUMMARY
 
-
-    # --------------------------------------------------------
-    # QUIZ
-    # --------------------------------------------------------
-
-    if (
-        document_question
-        and _is_quiz_question(
-            text
+        result["requires_multiple_chunks"] = bool(
+            result.get(
+                "requires_multiple_chunks",
+                True
+            )
         )
-    ):
-        return QUIZ
 
+        # ----------------------------------------------------
+        # Missing rewritten query
+        # ----------------------------------------------------
 
-    # --------------------------------------------------------
-    # DOCUMENT QA
-    # --------------------------------------------------------
+        if not result.get("rewritten_query"):
 
-    if document_question:
-        return QA
+            result["rewritten_query"] = question
 
+        return result
 
-    # --------------------------------------------------------
-    # CODING
-    # --------------------------------------------------------
+    except Exception as e:
 
-    if _is_coding_question(
-        text
-    ):
-        return CODING
+        print(
+            "Intent classification error:",
+            str(e)
+        )
 
+        # Never make the whole RAG system fail
+        # because intent classification failed.
 
-    # --------------------------------------------------------
-    # GENERAL
-    # --------------------------------------------------------
-
-    return GENERAL
+        return fallback_intent(question)
