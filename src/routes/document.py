@@ -1,287 +1,372 @@
 import os
+import uuid
 
 from fastapi import (
     APIRouter,
+    UploadFile,
+    File,
     Depends,
-    HTTPException,
-)
-
-from src.middleware.authmiddleware import (
-    get_current_active_user,
-)
-
-from src.database.mongodb import db
-
-from src.database.qdrant import (
-    client,
-    COLLECTION_NAME,
+    HTTPException
 )
 
 from qdrant_client.models import (
     Filter,
     FieldCondition,
-    MatchValue,
+    MatchValue
 )
+
+from src.middleware.authmiddleware import get_current_active_user
+from src.database.mongodb import db
+from src.database.qdrant import client, COLLECTION_NAME
+from src.services.rag_service import process_pdf
 
 
 router = APIRouter(
     prefix="/documents",
-    tags=["Documents"],
+    tags=["Documents"]
 )
 
+
+UPLOAD_DIR = "uploads"
+
+os.makedirs(
+    UPLOAD_DIR,
+    exist_ok=True
+)
+
+
+# ======================================================
+# UPLOAD PDF
+# ======================================================
+
+@router.post("/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_active_user)
+):
+
+    # --------------------------------------------------
+    # Validate PDF
+    # --------------------------------------------------
+
+    filename = file.filename or ""
+
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are allowed"
+        )
+
+    # --------------------------------------------------
+    # Generate document ID
+    # --------------------------------------------------
+
+    document_id = str(uuid.uuid4())
+
+    # --------------------------------------------------
+    # Save PDF
+    # --------------------------------------------------
+
+    file_path = os.path.join(
+        UPLOAD_DIR,
+        f"{document_id}.pdf"
+    )
+
+    content = await file.read()
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # --------------------------------------------------
+    # Process PDF
+    # --------------------------------------------------
+
+    try:
+
+        result = process_pdf(
+            file_path=file_path,
+            user_id=str(current_user["_id"]),
+            document_id=document_id,
+            filename=filename
+        )
+
+    except Exception as e:
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Document processing failed: {str(e)}"
+        )
+
+    # --------------------------------------------------
+    # Save metadata in MongoDB
+    # --------------------------------------------------
+
+    db["documents"].insert_one({
+        "document_id": document_id,
+        "user_id": str(current_user["_id"]),
+        "filename": filename,
+        "file_path": file_path,
+        "chunk_count": result["chunks"],
+        "status": "processed"
+    })
+
+    return {
+        "message": "Document processed successfully",
+        "document_id": document_id,
+        "filename": filename,
+        "chunks": result["chunks"]
+    }
+
+
+# ======================================================
+# GET ALL USER DOCUMENTS
+# ======================================================
+
+@router.get("")
+async def get_documents(
+    current_user=Depends(get_current_active_user)
+):
+
+    user_id = str(current_user["_id"])
+
+    documents = db["documents"].find({
+        "user_id": user_id
+    })
+
+    result = []
+
+    for document in documents:
+
+        result.append({
+            "document_id": document["document_id"],
+            "filename": document["filename"],
+            "chunk_count": document.get(
+                "chunk_count",
+                0
+            ),
+            "status": document.get(
+                "status",
+                "unknown"
+            )
+        })
+
+    return {
+        "documents": result
+    }
+
+
+# ======================================================
+# QDRANT HEALTH
+# ======================================================
+
+@router.get("/qdrant/health")
+async def qdrant_health():
+
+    try:
+
+        collections = client.get_collections()
+
+        return {
+            "status": "connected",
+            "collections": [
+                collection.name
+                for collection in collections.collections
+            ]
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Qdrant connection failed: {str(e)}"
+        )
+
+
+# ======================================================
+# QDRANT POINTS
+# ======================================================
+
+@router.get("/qdrant/points")
+async def qdrant_points():
+
+    try:
+
+        points, _ = client.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=3,
+            with_payload=True,
+            with_vectors=False
+        )
+
+        return {
+            "collection": COLLECTION_NAME,
+            "points": [
+                {
+                    "id": str(point.id),
+                    "payload": point.payload
+                }
+                for point in points
+            ]
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to read Qdrant points: {str(e)}"
+        )
+
+
+# ======================================================
+# QDRANT COUNT
+# ======================================================
+
+@router.get("/qdrant/count")
+async def qdrant_count():
+
+    try:
+
+        result = client.count(
+            collection_name=COLLECTION_NAME,
+            exact=True
+        )
+
+        return {
+            "collection": COLLECTION_NAME,
+            "points_count": result.count
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to count Qdrant points: {str(e)}"
+        )
+
+
+# ======================================================
+# GET SINGLE DOCUMENT
+# ======================================================
+
+@router.get("/{document_id}")
+async def get_document(
+    document_id: str,
+    current_user=Depends(get_current_active_user)
+):
+
+    user_id = str(current_user["_id"])
+
+    document = db["documents"].find_one({
+        "document_id": document_id,
+        "user_id": user_id
+    })
+
+    if not document:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found"
+        )
+
+    return {
+        "document_id": document["document_id"],
+        "filename": document["filename"],
+        "file_path": document["file_path"],
+        "chunk_count": document.get(
+            "chunk_count",
+            0
+        ),
+        "status": document.get(
+            "status",
+            "unknown"
+        )
+    }
+
+
+# ======================================================
+# DELETE DOCUMENT
+# ======================================================
 
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: str,
-    current_user=Depends(
-        get_current_active_user
-    ),
+    current_user=Depends(get_current_active_user)
 ):
-    """
-    Delete a user's document completely.
 
-    Order:
-    1. Resolve authenticated user
-    2. Find MongoDB metadata
-    3. Delete Qdrant vectors
-    4. Delete physical PDF
-    5. Delete MongoDB metadata
-    """
+    user_id = str(current_user["_id"])
 
-    # ==================================================
-    # 1. USER ID
-    # ==================================================
+    # --------------------------------------------------
+    # Find user's document
+    # --------------------------------------------------
 
-    try:
-        user_id = str(
-            current_user["_id"]
-        )
-    except Exception as exc:
-        print(
-            "[DELETE] Failed to resolve user_id:",
-            repr(exc),
-        )
-
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid authenticated user.",
-        ) from exc
-
-
-    print(
-        f"[DELETE] document_id={document_id}"
-    )
-
-    print(
-        f"[DELETE] user_id={user_id}"
-    )
-
-
-    # ==================================================
-    # 2. FIND DOCUMENT IN MONGODB
-    # ==================================================
-
-    try:
-        document = db["documents"].find_one(
-            {
-                "document_id": document_id,
-                "user_id": user_id,
-            }
-        )
-
-    except Exception as exc:
-        print(
-            "[DELETE] MongoDB find failed:",
-            repr(exc),
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to access document metadata.",
-        ) from exc
-
+    document = db["documents"].find_one({
+        "document_id": document_id,
+        "user_id": user_id
+    })
 
     if not document:
-        print(
-            "[DELETE] Document not found."
-        )
 
         raise HTTPException(
             status_code=404,
-            detail="Document not found.",
+            detail="Document not found"
         )
 
-
-    print(
-        "[DELETE] MongoDB document found."
-    )
-
-
-    # ==================================================
-    # 3. GET FILE PATH
-    # ==================================================
-
-    file_path = document.get(
-        "file_path"
-    )
-
-    print(
-        f"[DELETE] file_path={file_path}"
-    )
-
-
-    # ==================================================
-    # 4. DELETE QDRANT VECTORS
-    # ==================================================
+    # --------------------------------------------------
+    # Delete Qdrant vectors
+    # --------------------------------------------------
 
     try:
 
-        delete_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="document_id",
-                    match=MatchValue(
-                        value=document_id
-                    ),
-                ),
-                FieldCondition(
-                    key="user_id",
-                    match=MatchValue(
-                        value=user_id
-                    ),
-                ),
-            ]
-        )
-
-
-        print(
-            "[DELETE] Deleting Qdrant vectors..."
-        )
-
-
-        qdrant_result = client.delete(
+        client.delete(
             collection_name=COLLECTION_NAME,
-            points_selector=delete_filter,
-            wait=True,
-        )
-
-
-        print(
-            "[DELETE] Qdrant delete completed:",
-            qdrant_result,
-        )
-
-    except Exception as exc:
-
-        print(
-            "[DELETE] Qdrant delete failed:",
-            repr(exc),
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Failed to delete document "
-                "vectors from Qdrant."
-            ),
-        ) from exc
-
-
-    # ==================================================
-    # 5. DELETE PHYSICAL PDF
-    # ==================================================
-
-    if file_path:
-
-        try:
-
-            if os.path.exists(
-                file_path
-            ):
-
-                os.remove(
-                    file_path
-                )
-
-                print(
-                    "[DELETE] PDF file deleted."
-                )
-
-            else:
-
-                print(
-                    "[DELETE] PDF file already missing."
-                )
-
-        except Exception as exc:
-
-            print(
-                "[DELETE] PDF deletion failed:",
-                repr(exc),
-            )
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Qdrant vectors were deleted, "
-                    "but the PDF file could not be removed."
-                ),
-            ) from exc
-
-
-    # ==================================================
-    # 6. DELETE MONGODB METADATA
-    # ==================================================
-
-    try:
-
-        delete_result = (
-            db["documents"].delete_one(
-                {
-                    "document_id": document_id,
-                    "user_id": user_id,
-                }
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(
+                            value=document_id
+                        )
+                    ),
+                    FieldCondition(
+                        key="user_id",
+                        match=MatchValue(
+                            value=user_id
+                        )
+                    )
+                ]
             )
         )
 
-
-        print(
-            "[DELETE] MongoDB delete count:",
-            delete_result.deleted_count,
-        )
-
-    except Exception as exc:
-
-        print(
-            "[DELETE] MongoDB delete failed:",
-            repr(exc),
-        )
+    except Exception as e:
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Qdrant and file deletion succeeded, "
-                "but MongoDB metadata deletion failed."
-            ),
-        ) from exc
-
-
-    if (
-        delete_result.deleted_count
-        == 0
-    ):
-
-        raise HTTPException(
-            status_code=404,
-            detail="Document metadata not found.",
+            detail=f"Failed to delete vectors: {str(e)}"
         )
 
+    # --------------------------------------------------
+    # Delete PDF file
+    # --------------------------------------------------
 
-    # ==================================================
-    # 7. SUCCESS
-    # ==================================================
+    file_path = document.get("file_path")
+
+    if file_path and os.path.exists(file_path):
+
+        os.remove(file_path)
+
+    # --------------------------------------------------
+    # Delete MongoDB metadata
+    # --------------------------------------------------
+
+    db["documents"].delete_one({
+        "document_id": document_id,
+        "user_id": user_id
+    })
 
     return {
         "message": "Document deleted successfully",
-        "document_id": document_id,
+        "document_id": document_id
     }
