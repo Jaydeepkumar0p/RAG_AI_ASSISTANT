@@ -1,316 +1,245 @@
-from typing import Literal
-
 from src.services.llm_service import llm
 
 
-Intent = Literal[
-    "QA",
-    "SUMMARY",
-    "EXTRACTION",
-    "LIST",
-    "EXPLANATION",
-    "COMPARISON",
-    "QUIZ",
-    "PRACTICE",
-    "DOCUMENT_OVERVIEW",
-    "FOLLOW_UP",
-]
-
+# ============================================================
+# INTENT CLASSIFICATION
+# ============================================================
 
 VALID_INTENTS = {
-    "QA",
+    "DOCUMENT_QA",
     "SUMMARY",
-    "EXTRACTION",
-    "LIST",
-    "EXPLANATION",
-    "COMPARISON",
     "QUIZ",
-    "PRACTICE",
-    "DOCUMENT_OVERVIEW",
-    "FOLLOW_UP",
+    "GENERAL_QA",
 }
-
-
-def _normalize_intent(value: str) -> str:
-
-    if not value:
-        return "QA"
-
-    value = value.strip().upper()
-
-    # Handle accidental LLM formatting
-    value = value.replace("`", "")
-    value = value.replace(".", "")
-    value = value.split("\n")[0].strip()
-
-    if value in VALID_INTENTS:
-        return value
-
-    return "QA"
 
 
 def classify_intent(question: str) -> str:
 
-    """
-    Classify a user's request into a high-level
-    RAG/document intent.
+    question = question.strip()
 
-    The classifier intentionally returns ONLY
-    the intent name.
-    """
-
-    if not question or not question.strip():
-        return "QA"
+    if not question:
+        return "GENERAL_QA"
 
     prompt = f"""
-You are an advanced intent classifier for a
-document-based AI RAG assistant.
+You are an advanced intent classifier for an AI Knowledge Assistant.
 
-The user may ask questions about uploaded documents,
-resumes, PDFs, study material, notes, projects,
-certifications, skills, experience, or any other
-retrieved knowledge.
+The assistant can answer questions using:
+1. User-uploaded documents
+2. General world/technical knowledge
 
-Classify the user's request into EXACTLY ONE
-of the following intents.
+Classify the user's request into EXACTLY ONE intent.
 
-==================================================
-AVAILABLE INTENTS
-==================================================
+============================================================
+INTENTS
+============================================================
 
-QA
+DOCUMENT_QA
 
-Use QA when the user wants a direct factual answer
-to a specific question.
+Use DOCUMENT_QA when the user is asking about information
+that is expected to come from their uploaded documents,
+resume, PDFs, files, or knowledge base.
 
 Examples:
-- What programming language is mentioned?
-- Where did I complete my internship?
-- What was my CGPA?
-- When did I graduate?
-- What database did I use?
-- How many projects are listed?
 
---------------------------------------------------
+"List my skills"
+"What skills are mentioned in my resume?"
+"What certifications are in my resume?"
+"What projects are mentioned in my CV?"
+"Tell me about my internship"
+"What technologies are listed in my document?"
+"What does my resume say about React?"
+"Find my education details"
+"What experience do I have?"
+"What does the uploaded PDF say about authentication?"
+"According to my document, what is..."
+"From my resume, tell me..."
+"Based on my uploaded document..."
+
+------------------------------------------------------------
 
 SUMMARY
 
-Use SUMMARY when the user explicitly asks to
-summarize, condense, shorten, or provide the main
-points of document content.
+Use SUMMARY when the user wants a summary, overview,
+key points, explanation, or condensation of a document
+or uploaded content.
 
 Examples:
-- Summarize my resume.
-- Summarize this document.
-- Give me a short summary.
-- Give me the main points.
-- Summarize my internship experience.
-- Give me a concise overview of this PDF.
 
---------------------------------------------------
+"Summarize my document"
+"Give me a summary of my resume"
+"Summarize this PDF"
+"Give me the key points"
+"Explain the main ideas in my document"
+"Give me a short overview of this document"
+"What are the important points?"
+"Summarize pages 1 to 5"
 
-DOCUMENT_OVERVIEW
+If the request clearly refers to an uploaded document,
+use SUMMARY.
 
-Use DOCUMENT_OVERVIEW when the user wants to know
-what a document contains generally, without necessarily
-asking for a condensed summary.
-
-Examples:
-- What is this document about?
-- Tell me what is inside this PDF.
-- What information does my resume contain?
-- Give me an overview of this document.
-- What sections are present in my resume?
-- Explain what this document contains.
-
---------------------------------------------------
-
-EXTRACTION
-
-Use EXTRACTION when the user asks to find, extract,
-identify, or retrieve specific pieces of information
-from a document.
-
-Examples:
-- Find all certifications in my resume.
-- Extract my internship details.
-- What skills are mentioned?
-- Find all programming languages.
-- List all project names and their descriptions.
-- Find every mention of React.
-- Extract my education details.
-
---------------------------------------------------
-
-LIST
-
-Use LIST when the main purpose is to produce a list
-of multiple related items from the documents.
-
-Examples:
-- List my skills.
-- List all my projects.
-- List my certifications.
-- Give me all technologies.
-- Show all programming languages.
-- Give me a list of my achievements.
-
-If the request is primarily asking to retrieve multiple
-items, prefer LIST over QA.
-
---------------------------------------------------
-
-EXPLANATION
-
-Use EXPLANATION when the user asks for a detailed
-explanation, interpretation, or understanding of
-something contained in the document.
-
-Examples:
-- Explain my AI project.
-- Explain how my RAG system works.
-- Explain my internship experience.
-- Explain this project in detail.
-- Explain the architecture mentioned in my resume.
-- Explain my technical skills.
-
---------------------------------------------------
-
-COMPARISON
-
-Use COMPARISON when the user asks to compare two or
-more things.
-
-Examples:
-- Compare my two projects.
-- Which project used more technologies?
-- Compare my internships.
-- What are the differences between these projects?
-- Compare my MERN project and AI project.
-
---------------------------------------------------
+------------------------------------------------------------
 
 QUIZ
 
-Use QUIZ when the user explicitly asks for a quiz,
-MCQs, questions, or testing based on their documents.
+Use QUIZ when the user wants questions or practice material
+generated from their documents OR from a general topic.
 
 Examples:
-- Create a quiz from my resume.
-- Give me 10 MCQs.
-- Test me on my projects.
-- Make a quiz from this PDF.
-- Generate questions from my study material.
 
---------------------------------------------------
+"Create a quiz from my PDF"
+"Give me MCQs from my resume"
+"Create 20 questions from this document"
+"Test me on this PDF"
+"Give me interview questions about Java"
+"Create DSA practice questions"
+"Give me 10 binary search questions"
+"Quiz me on operating systems"
 
-PRACTICE
+------------------------------------------------------------
 
-Use PRACTICE when the user wants interview questions,
-practice questions, mock interviews, preparation,
-or questions designed to test their knowledge.
+GENERAL_QA
+
+Use GENERAL_QA when the user is asking a normal question
+that does NOT require information from their uploaded documents.
+
+This includes:
+
+Programming questions
+DSA questions
+Computer science concepts
+Coding explanations
+Interview preparation
+Mathematics
+General knowledge
+Concept explanations
+Comparisons
+How-to questions
+Debugging
+Algorithms
+System design
+Technical questions
 
 Examples:
-- Give me interview questions based on my resume.
-- Prepare me for an interview.
-- Ask me questions about my projects.
-- Give me Java interview questions from my skills.
-- Conduct a mock interview.
-- Test my knowledge of this document.
 
---------------------------------------------------
+"What is binary search?"
+"Explain binary search in Java"
+"What is a hash map?"
+"Explain recursion"
+"What is dynamic programming?"
+"How does JWT work?"
+"What is REST API?"
+"Explain Docker"
+"What is an operating system?"
+"Explain TCP vs UDP"
+"What is DSA OA?"
+"How should I prepare for a coding interview?"
+"Give me a Java implementation of binary search"
+"Why is quicksort O(n log n)?"
 
-FOLLOW_UP
+These should NOT require document retrieval.
 
-Use FOLLOW_UP when the user's question clearly
-continues or refers to the previous conversation.
-
-Examples:
-- Explain that in more detail.
-- Tell me more about it.
-- What about the second project?
-- Explain the previous answer.
-- Give me more details.
-- Continue.
-- What else?
-- Why?
-- How?
-
-Only use FOLLOW_UP when the question clearly depends
-on previous conversation context.
-
-==================================================
+============================================================
 IMPORTANT RULES
-==================================================
+============================================================
 
-1. Return EXACTLY ONE intent.
+Rule 1:
+If the user explicitly mentions:
+resume
+CV
+document
+PDF
+uploaded file
+my file
+my document
+my resume
+my CV
+knowledge base
+uploaded documents
 
-2. Return ONLY the intent name.
+and asks for information from it,
+classify as DOCUMENT_QA or SUMMARY.
 
-3. Never return explanations.
+Rule 2:
+If the user asks to summarize uploaded content,
+classify as SUMMARY.
 
-4. Never return JSON.
+Rule 3:
+If the user asks to generate questions, MCQs,
+practice questions, or a quiz, classify as QUIZ.
 
-5. Never return Markdown.
+Rule 4:
+If the user asks a standalone technical/general question
+such as:
 
-6. Never return multiple intents.
+"What is binary search?"
 
-7. If the user asks to "list" multiple things,
-   prefer LIST.
+classify as GENERAL_QA.
 
-8. If the user asks to "find", "extract", or
-   retrieve specific information, prefer EXTRACTION.
+Rule 5:
+Do NOT classify every question as DOCUMENT_QA.
 
-9. If the user asks to "summarize", prefer SUMMARY.
+Rule 6:
+The word "my" alone does not mean the question requires
+a document.
 
-10. If the user asks "what is this document about?"
-    prefer DOCUMENT_OVERVIEW.
+Rule 7:
+When uncertain between GENERAL_QA and DOCUMENT_QA:
 
-11. If the user asks "explain", prefer EXPLANATION.
+If the question explicitly refers to the user's document,
+choose DOCUMENT_QA.
 
-12. If the user asks to compare things,
-    use COMPARISON.
+Otherwise choose GENERAL_QA.
 
-13. If the user asks for MCQs or a quiz,
-    use QUIZ.
+Rule 8:
+Return ONLY the intent name.
 
-14. If the user asks for interview preparation
-    or practice questions, use PRACTICE.
+Valid outputs:
 
-15. If the request is a normal factual question,
-    use QA.
+DOCUMENT_QA
+SUMMARY
+QUIZ
+GENERAL_QA
 
-16. Do not classify based only on individual words.
-    Understand the user's overall intent.
-
-==================================================
-USER REQUEST
-==================================================
+============================================================
+USER QUESTION
+============================================================
 
 {question}
 
-==================================================
+============================================================
 INTENT
-==================================================
+============================================================
 """
 
     try:
 
         response = llm.invoke(prompt)
 
-        content = getattr(
-            response,
-            "content",
-            ""
+        intent = response.content.strip().upper()
+
+        # Remove accidental formatting
+        intent = (
+            intent
+            .replace("`", "")
+            .replace(".", "")
+            .strip()
         )
 
-        return _normalize_intent(content)
+        # Handle cases where model returns extra text
+        for valid_intent in VALID_INTENTS:
+
+            if valid_intent in intent:
+
+                return valid_intent
 
     except Exception as e:
 
         print(
-            f"Intent classification error: {e}"
+            "Intent classification error:",
+            repr(e)
         )
 
-        # Safe fallback.
-        return "QA"
+    # Safe fallback:
+    # General questions should still work even if
+    # intent classification fails.
+    return "GENERAL_QA"
