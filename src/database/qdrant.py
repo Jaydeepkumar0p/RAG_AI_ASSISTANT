@@ -42,23 +42,23 @@ client = QdrantClient(
 
 
 # ======================================================
-# COLLECTION
+# COLLECTION INITIALIZATION
 # ======================================================
 
-def ensure_collection():
+def initialize_qdrant():
     """
-    Create collection if it does not exist.
+    Ensure collection and required payload indexes exist.
     """
 
-    exists = client.collection_exists(
+    # --------------------------------------------------
+    # Collection
+    # --------------------------------------------------
+
+    if not client.collection_exists(
         COLLECTION_NAME
-    )
-
-    if not exists:
-
+    ):
         client.create_collection(
             collection_name=COLLECTION_NAME,
-
             vectors_config=models.VectorParams(
                 size=384,
                 distance=models.Distance.COSINE,
@@ -70,71 +70,44 @@ def ensure_collection():
             f"{COLLECTION_NAME}"
         )
 
-
-# ======================================================
-# PAYLOAD INDEXES
-# ======================================================
-
-def ensure_payload_indexes():
-    """
-    Ensure all fields used in Qdrant filters have
-    payload indexes.
-
-    IMPORTANT:
-    document_id is required for deleting vectors
-    belonging to a document.
-    """
-
     # --------------------------------------------------
-    # user_id
+    # user_id index
     # --------------------------------------------------
 
     try:
-
         client.create_payload_index(
             collection_name=COLLECTION_NAME,
-
             field_name="user_id",
-
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
 
         print(
-            "Qdrant index ready: user_id"
+            "Qdrant user_id index ready"
         )
 
     except Exception as exc:
-
         print(
             "user_id index already exists "
             "or could not be created:",
             exc,
         )
 
-
     # --------------------------------------------------
-    # document_id
-    # --------------------------------------------------
-    #
-    # THIS IS THE IMPORTANT FIX.
+    # document_id index
     # --------------------------------------------------
 
     try:
-
         client.create_payload_index(
             collection_name=COLLECTION_NAME,
-
             field_name="document_id",
-
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
 
         print(
-            "Qdrant index ready: document_id"
+            "Qdrant document_id index ready"
         )
 
     except Exception as exc:
-
         print(
             "document_id index already exists "
             "or could not be created:",
@@ -143,31 +116,83 @@ def ensure_payload_indexes():
 
 
 # ======================================================
-# INITIALIZE
+# DELETE DOCUMENT VECTORS
 # ======================================================
 
-def initialize_qdrant():
+def delete_document_vectors(
+    document_id: str,
+    user_id: str,
+):
     """
-    Run this once when the FastAPI application starts.
+    Delete all Qdrant vectors belonging to one document
+    and one authenticated user.
     """
 
-    ensure_collection()
+    if not document_id:
+        raise ValueError(
+            "document_id is required"
+        )
 
-    ensure_payload_indexes()
+    if not user_id:
+        raise ValueError(
+            "user_id is required"
+        )
 
-    print(
-        "Qdrant initialization complete"
+    # --------------------------------------------------
+    # Build a proper Qdrant filter.
+    #
+    # DO NOT use a plain dict here.
+    # --------------------------------------------------
+
+    delete_filter = models.Filter(
+        must=[
+            models.FieldCondition(
+                key="document_id",
+                match=models.MatchValue(
+                    value=document_id
+                ),
+            ),
+            models.FieldCondition(
+                key="user_id",
+                match=models.MatchValue(
+                    value=user_id
+                ),
+            ),
+        ]
     )
 
+    print(
+        "Deleting Qdrant vectors:",
+        {
+            "document_id": document_id,
+            "user_id": user_id,
+        },
+    )
+
+    # --------------------------------------------------
+    # Delete matching points
+    # --------------------------------------------------
+
+    operation = client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=delete_filter,
+        wait=True,
+    )
+
+    print(
+        "Qdrant delete completed:",
+        operation,
+    )
+
+    return operation
+
 
 # ======================================================
-# OPTIONAL HEALTH CHECK
+# QDRANT HEALTH
 # ======================================================
 
 def check_qdrant_connection():
-
     try:
-
         client.get_collections()
 
         print(
@@ -177,7 +202,6 @@ def check_qdrant_connection():
         return True
 
     except Exception as exc:
-
         print(
             "Qdrant connection error:",
             exc,
