@@ -1,280 +1,483 @@
 import json
+import re
+from typing import Dict, Any
 
 from groq import Groq
 
 from src.core.config import settings
 
 
-# ======================================================
+# ============================================================
 # GROQ CLIENT
-# ======================================================
+# ============================================================
 
 client = Groq(
     api_key=settings.GROQ_API_KEY
 )
 
 
-# ======================================================
-# INTENT PROMPT
-# ======================================================
+# ============================================================
+# MODEL
+# ============================================================
 
-SYSTEM_PROMPT = """
-You are an advanced intent classifier for a document
-intelligence and RAG application.
+MODEL_NAME = "openai/gpt-oss-120b"
 
-The user may ask questions about uploaded PDFs,
-resumes, documents, or their knowledge base.
 
-Classify the user's request into exactly ONE intent.
+# ============================================================
+# VALID INTENTS
+# ============================================================
 
-AVAILABLE INTENTS:
+VALID_INTENTS = {
+    "QA",
+    "SUMMARY",
+    "LIST",
+    "COMPARISON",
+    "EXTRACTION",
+    "EXPLANATION",
+    "SKILLS",
+    "EXPERIENCE",
+    "EDUCATION",
+    "PROJECTS",
+    "CERTIFICATIONS",
+    "CONTACT",
+    "DOCUMENT_INFO",
+    "FOLLOW_UP",
+    "GREETING",
+    "OUT_OF_SCOPE",
+}
 
-DOCUMENT_QA
-DOCUMENT_SUMMARY
-DOCUMENT_DETAILED_SUMMARY
-DOCUMENT_SKILLS
-DOCUMENT_EXPERIENCE
-DOCUMENT_EDUCATION
-DOCUMENT_PROJECTS
-DOCUMENT_CERTIFICATIONS
-DOCUMENT_TECHNOLOGIES
-DOCUMENT_CONTACT_INFO
-DOCUMENT_ACHIEVEMENTS
-DOCUMENT_EXTRACT
-DOCUMENT_COMPARE
-DOCUMENT_TIMELINE
-DOCUMENT_OVERVIEW
-GENERAL_CHAT
-UNKNOWN
+
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
+
+INTENT_SYSTEM_PROMPT = """
+You are an advanced intent classifier for a personal document
+RAG assistant.
+
+The user has uploaded documents such as:
+
+- Resume
+- CV
+- Certificates
+- Project documents
+- Notes
+- PDFs
+- Professional documents
+
+Your job is to understand the user's REAL information need.
+
+You must classify the request into exactly ONE intent.
+
+Available intents:
+
+QA
+SUMMARY
+LIST
+COMPARISON
+EXTRACTION
+EXPLANATION
+SKILLS
+EXPERIENCE
+EDUCATION
+PROJECTS
+CERTIFICATIONS
+CONTACT
+DOCUMENT_INFO
+FOLLOW_UP
+GREETING
+OUT_OF_SCOPE
 
 
 INTENT DEFINITIONS
 ==================
 
-DOCUMENT_QA
-
-Specific factual question about the document.
+QA:
+Questions asking for specific information from documents.
 
 Examples:
+- What technologies are in my resume?
+- Where did I work?
 - What is my CGPA?
-- Where did I study?
-- Where did I intern?
-- What was my role?
-- When did I graduate?
+- What projects did I build?
 
-
-DOCUMENT_SUMMARY
-
-User wants a normal summary.
+SUMMARY:
+User wants a summary of a document or its contents.
 
 Examples:
-- Summarize my document
 - Summarize my resume
-- Give me a summary
-- Give me a brief summary
+- Give me a summary of this document
+- Explain my resume briefly
+- Give me the main points
 
-
-DOCUMENT_DETAILED_SUMMARY
-
-User wants a comprehensive explanation.
-
-Examples:
-- Explain my entire resume
-- Give me a detailed summary
-- Tell me everything important in my resume
-- Explain the document section by section
-
-
-DOCUMENT_SKILLS
-
-Questions about skills.
+LIST:
+User wants a list of items.
 
 Examples:
 - List my skills
-- What skills do I have?
-- What technical skills are in my resume?
-- Show all my skills
+- List all my projects
+- Show all technologies
+- Give me all certifications
 
-
-DOCUMENT_EXPERIENCE
-
-Questions about work experience or internships.
+EXTRACTION:
+User wants specific structured information extracted.
 
 Examples:
-- What experience do I have?
-- Where did I work?
-- List my internships
-- Tell me about my work experience
+- Extract my email
+- Extract all company names
+- Extract dates from my resume
+- Extract all programming languages
 
-
-DOCUMENT_EDUCATION
-
-Questions about academic information.
+COMPARISON:
+User wants two or more things compared.
 
 Examples:
-- What is my degree?
+- Compare my two projects
+- Which project uses more technologies?
+- Compare my internships
+
+EXPLANATION:
+User wants an explanation of something contained in the documents.
+
+Examples:
+- Explain my RAG project
+- Explain how my AI project works
+- Explain my internship experience
+
+SKILLS:
+Questions specifically about skills, technologies, tools,
+programming languages, frameworks, databases or technical abilities.
+
+Examples:
+- What are my skills?
+- List my technical skills
+- What technologies do I know?
+- What frameworks are in my resume?
+
+EXPERIENCE:
+Questions about work experience, internships or employment.
+
+Examples:
+- Tell me about my experience
+- Where did I intern?
+- What companies have I worked with?
+
+EDUCATION:
+Questions about education, degree, university, CGPA or academic history.
+
+Examples:
 - Where did I study?
 - What is my CGPA?
-- Tell me about my education
+- What degree am I pursuing?
 
-
-DOCUMENT_PROJECTS
-
+PROJECTS:
 Questions about projects.
 
 Examples:
-- List my projects
+- Tell me about my projects
 - What projects have I built?
-- Explain my projects
+- Explain my CRM project
 
-
-DOCUMENT_CERTIFICATIONS
-
-Questions about certifications.
+CERTIFICATIONS:
+Questions about certificates or certifications.
 
 Examples:
 - What certifications do I have?
 - List my certificates
 
-
-DOCUMENT_TECHNOLOGIES
-
-Questions about technologies.
-
-Examples:
-- What technologies do I know?
-- List technologies from my resume
-- What frameworks do I use?
-- What programming languages are listed?
-
-
-DOCUMENT_CONTACT_INFO
-
+CONTACT:
 Questions about contact information.
 
 Examples:
 - What is my email?
-- What is my GitHub?
+- What is my phone number?
 - What is my LinkedIn?
 
-
-DOCUMENT_ACHIEVEMENTS
-
-Questions about achievements.
+DOCUMENT_INFO:
+Questions about the document itself.
 
 Examples:
-- What are my achievements?
-- List my awards
-- What accomplishments are mentioned?
+- What document did I upload?
+- How many pages does my document have?
+- What files have I uploaded?
 
-
-DOCUMENT_EXTRACT
-
-User wants structured extraction.
+FOLLOW_UP:
+A question that clearly continues the previous conversation.
 
 Examples:
-- Extract all company names
-- Extract all dates
-- Extract all programming languages
-- Extract all technologies
-- Extract all organizations
+User: What projects did I build?
+User: Explain the first one.
 
-
-DOCUMENT_COMPARE
-
-User wants comparison between documents,
-experiences, projects, skills, etc.
-
-
-DOCUMENT_TIMELINE
-
-User wants chronological information.
+GREETING:
+Simple conversational greetings.
 
 Examples:
-- Give me my career timeline
-- Show my education timeline
+- Hi
+- Hello
+- Hey
+- Good morning
 
-
-DOCUMENT_OVERVIEW
-
-Broad overview of a document.
+OUT_OF_SCOPE:
+Questions unrelated to the uploaded documents or the assistant's purpose.
 
 Examples:
-- Give me an overview
-- What does my resume contain?
-- Tell me about this document
+- What is the weather?
+- Write me a game
+- Who won the football match?
 
 
-GENERAL_CHAT
+IMPORTANT RULES
+===============
 
-Normal conversation that does not require document retrieval.
+1. Understand the semantic meaning, not just keywords.
 
+2. "List my skills", "what are my skills", "show my technologies",
+   and "technical skills in my resume" should normally be SKILLS.
 
-UNKNOWN
+3. "Summarize my document" should be SUMMARY.
 
-Cannot confidently determine the intent.
+4. "Tell me everything about my resume" should be SUMMARY.
 
+5. "Extract my email" should be EXTRACTION or CONTACT.
+   Prefer CONTACT when asking specifically for contact information.
 
-IMPORTANT:
+6. Follow-up questions should use FOLLOW_UP when they depend
+   strongly on previous conversation context.
 
-If the user refers to:
+7. Return ONLY valid JSON.
 
-resume
-CV
-PDF
-document
-uploaded file
-my file
-my resume
-my document
-my experience
-my skills
-my projects
-
-then prefer a DOCUMENT_* intent.
-
-Return ONLY valid JSON.
-
-Required format:
+Required JSON format:
 
 {
-    "intent": "DOCUMENT_QA",
-    "confidence": 0.95,
-    "requires_retrieval": true,
-    "requires_generation": true,
-    "rewritten_query": "clean retrieval query"
+    "intent": "SKILLS",
+    "confidence": 0.98,
+    "reason": "The user is asking for technical skills from the document."
 }
+
+The intent MUST be exactly one of the allowed intents.
 """
 
 
-# ======================================================
-# INTENT DETECTION
-# ======================================================
+# ============================================================
+# JSON CLEANER
+# ============================================================
 
-def detect_intent(question: str) -> dict:
+def _extract_json(text: str) -> Dict[str, Any]:
+
+    if not text:
+        return {
+            "intent": "QA",
+            "confidence": 0.0,
+            "reason": "Empty classifier response"
+        }
+
+    text = text.strip()
+
+    # Remove markdown code fences
+    text = re.sub(
+        r"```json\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r"```\s*",
+        "",
+        text
+    )
+
+    # Try direct JSON
+    try:
+
+        data = json.loads(text)
+
+        if isinstance(data, dict):
+            return data
+
+    except json.JSONDecodeError:
+        pass
+
+    # Try finding JSON object inside response
+    match = re.search(
+        r"\{.*\}",
+        text,
+        flags=re.DOTALL
+    )
+
+    if match:
+
+        try:
+
+            data = json.loads(
+                match.group(0)
+            )
+
+            if isinstance(data, dict):
+                return data
+
+        except json.JSONDecodeError:
+            pass
+
+    return {
+        "intent": "QA",
+        "confidence": 0.0,
+        "reason": "Could not parse classifier response"
+    }
+
+
+# ============================================================
+# NORMALIZE INTENT
+# ============================================================
+
+def _normalize_intent(
+    intent: str
+) -> str:
+
+    if not intent:
+        return "QA"
+
+    intent = str(intent).strip().upper()
+
+    # Common aliases
+    aliases = {
+
+        "QUESTION": "QA",
+
+        "QUESTION_ANSWERING": "QA",
+
+        "SUMMARIZATION": "SUMMARY",
+
+        "BULLET_LIST": "LIST",
+
+        "TECHNICAL_SKILLS": "SKILLS",
+
+        "TECHNOLOGY": "SKILLS",
+
+        "TECHNOLOGIES": "SKILLS",
+
+        "WORK_EXPERIENCE": "EXPERIENCE",
+
+        "ACADEMICS": "EDUCATION",
+
+        "CERTIFICATE": "CERTIFICATIONS",
+
+        "CERTIFICATES": "CERTIFICATIONS",
+
+        "DOCUMENT": "DOCUMENT_INFO",
+
+        "GREETING_MESSAGE": "GREETING",
+
+    }
+
+    intent = aliases.get(
+        intent,
+        intent
+    )
+
+    if intent not in VALID_INTENTS:
+        return "QA"
+
+    return intent
+
+
+# ============================================================
+# MAIN CLASSIFIER
+# ============================================================
+
+def classify_intent(
+    question: str,
+    conversation_context: str = ""
+) -> Dict[str, Any]:
+
+    if not question:
+
+        return {
+            "intent": "QA",
+            "confidence": 0.0,
+            "reason": "Empty question"
+        }
+
+    question = question.strip()
+
+    # --------------------------------------------------------
+    # Very cheap local handling for greetings
+    # --------------------------------------------------------
+
+    greeting_words = {
+        "hi",
+        "hello",
+        "hey",
+        "hey there",
+        "good morning",
+        "good afternoon",
+        "good evening"
+    }
+
+    if question.lower() in greeting_words:
+
+        return {
+            "intent": "GREETING",
+            "confidence": 1.0,
+            "reason": "Simple greeting"
+        }
+
+    # --------------------------------------------------------
+    # Build context
+    # --------------------------------------------------------
+
+    context_text = ""
+
+    if conversation_context:
+
+        context_text = f"""
+Previous conversation context:
+
+{conversation_context}
+
+Use this context only to understand follow-up questions.
+"""
+
+    user_prompt = f"""
+Classify this user request.
+
+{context_text}
+
+Current user request:
+
+{question}
+
+Return ONLY JSON.
+"""
+
+
+    # --------------------------------------------------------
+    # Groq request
+    # --------------------------------------------------------
 
     try:
 
         response = client.chat.completions.create(
 
-            model="openai/gpt-oss-120b",
+            model=MODEL_NAME,
 
             messages=[
+
                 {
                     "role": "system",
-                    "content": SYSTEM_PROMPT
+                    "content": INTENT_SYSTEM_PROMPT
                 },
+
                 {
                     "role": "user",
-                    "content": question
+                    "content": user_prompt
                 }
+
             ],
 
             temperature=0,
 
-            response_format={
-                "type": "json_object"
-            }
+            max_tokens=300
         )
 
         content = (
@@ -284,23 +487,38 @@ def detect_intent(question: str) -> dict:
             .content
         )
 
-        result = json.loads(content)
-
-        intent = result.get(
-            "intent",
-            "DOCUMENT_QA"
+        data = _extract_json(
+            content
         )
 
-        confidence = float(
-            result.get(
-                "confidence",
-                0.5
+        intent = _normalize_intent(
+            data.get("intent")
+        )
+
+        confidence = data.get(
+            "confidence",
+            0.5
+        )
+
+        try:
+
+            confidence = float(
+                confidence
             )
-        )
 
-        rewritten_query = result.get(
-            "rewritten_query",
-            question
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            confidence = 0.5
+
+        confidence = max(
+            0.0,
+            min(
+                1.0,
+                confidence
+            )
         )
 
         return {
@@ -309,22 +527,13 @@ def detect_intent(question: str) -> dict:
 
             "confidence": confidence,
 
-            "requires_retrieval": bool(
-                result.get(
-                    "requires_retrieval",
-                    True
+            "reason": str(
+                data.get(
+                    "reason",
+                    ""
                 )
-            ),
+            )
 
-            "requires_generation": bool(
-                result.get(
-                    "requires_generation",
-                    True
-                )
-            ),
-
-            "rewritten_query":
-                rewritten_query
         }
 
     except Exception as e:
@@ -334,21 +543,13 @@ def detect_intent(question: str) -> dict:
             repr(e)
         )
 
-        # Safe fallback
+        # Never crash the complete RAG pipeline
         return {
 
-            "intent":
-                "DOCUMENT_QA",
+            "intent": "QA",
 
-            "confidence":
-                0.0,
+            "confidence": 0.0,
 
-            "requires_retrieval":
-                True,
+            "reason": "Intent classifier unavailable"
 
-            "requires_generation":
-                True,
-
-            "rewritten_query":
-                question
         }
